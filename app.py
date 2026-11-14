@@ -224,28 +224,32 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Automatic NSE F&O Stock + Options Scanner")
     st.caption("No manual stock or CE/PE selection. ARVI scans the NSE F&O universe, derives direction from underlying indicators, selects the matching CE/PE premium, backtests candidates and ranks the strongest historical results.")
-    st.info("Automatic mode: all F&O underlyings are loaded from Kite. To respect Kite API limits, the first pass prioritises up to 100 highest-turnover underlyings; up to 20 strongest directional candidates are option-enriched and backtested.")
-    auto_top=st.number_input("Maximum candidates for option backtest",5,30,15,5,key="auto_fno_backtest_count")
+    st.info("Full-universe mode: ARVI checks every active NSE F&O underlying available in the Kite instrument master, ranks all valid daily-history signals, then tests up to 30 strongest unique stocks (one CE or PE contract per stock) to stay within Kite quote/history API limits.")
     if st.button("RUN AUTOMATIC NSE F&O SCAN + BACKTEST",type="primary",key="auto_fno_scan"):
         if not connected:
             st.error("Verify Kite connection first.")
         else:
             try:
                 with st.spinner("Step 1/4 · Scanning NSE F&O stocks and calculating EMA, RSI, VWAP, ATR, relative volume and momentum..."):
-                    stock_frame,scan_stats=scan_stock_universe(kite,"FNO",100)
+                    stock_frame,scan_stats=scan_stock_universe(kite,"FNO",None)
                 st.session_state.auto_fno_scan_stats=scan_stats
                 st.session_state.auto_fno_stocks=stock_frame
                 directional=stock_frame[stock_frame["Signal"].isin(["BUY","SELL"])].copy() if not stock_frame.empty else pd.DataFrame()
-                with st.spinner("Step 2/4 · Selecting trend-aligned CE/PE options and checking premium, OI, volume, spread, theta and buyer pressure..."):
-                    option_frame=enrich_fno_option_premiums(kite,directional, max_stocks=min(20,int(auto_top))) if not directional.empty else pd.DataFrame()
+                if not directional.empty:
+                    directional=directional.sort_values(["Score","Relative Volume","Turnover ₹"],ascending=[False,False,False]).drop_duplicates("Stock").reset_index(drop=True)
+                # A single best liquid contract per stock; never repeat the same stock in the shortlist.
+                shortlist=directional.head(30).copy()
+                st.session_state.auto_fno_shortlist=shortlist
+                with st.spinner("Step 2/4 · Selecting one trend-aligned CE/PE contract per shortlisted stock..."):
+                    option_frame=enrich_fno_option_premiums(kite,shortlist,max_stocks=30) if not shortlist.empty else pd.DataFrame()
                 st.session_state.auto_fno_options=option_frame
                 tested=[]
                 if not option_frame.empty:
-                    with st.spinner("Step 3/4 · Backtesting EMA 9/21 on 5-minute option candles for each shortlisted stock..."):
+                    with st.spinner("Step 3/4 · Backtesting one option contract per unique stock on 30 days of 5-minute candles..."):
                         master=pd.DataFrame(kite.instruments("NFO"))
                         token_map=dict(zip(master["tradingsymbol"].astype(str),master["instrument_token"].astype(int))) if not master.empty else {}
                         now=datetime.now(IST); start_date=now-timedelta(days=30)
-                        for _,option in option_frame.head(int(auto_top)).iterrows():
+                        for _,option in option_frame.iterrows():
                             symbol=str(option["Option Symbol"])
                             token=token_map.get(symbol)
                             if not token: continue
@@ -273,14 +277,14 @@ with tabs[2]:
                                     "Wins":int(result["wins"]),
                                     "Losses":int(result["losses"]),
                                     "Net Points / Unit":float(result["net_points_per_unit"]),
-                                    "Backtest Return %":round(sum(float(t.get("return_pct",0.0)) for t in result.get("trades",[]))/max(1,len(result.get("trades",[]))),2),
+                                    "Net Trade Return %":round(sum(float(t.get("return_pct",0.0)) for t in result.get("trades",[])),2),
                                     "Strategy":"EMA 9/21 · 5-minute · 30-day"
                                 })
                             except Exception:
                                 continue
                 tested_frame=pd.DataFrame(tested)
                 if not tested_frame.empty:
-                    tested_frame=tested_frame.sort_values(["Net Points / Unit","Win Rate %","Stock Score"],ascending=False).reset_index(drop=True)
+                    tested_frame=tested_frame.sort_values(["Net Trade Return %","Net Points / Unit","Win Rate %","Stock Score"],ascending=False).drop_duplicates("Stock").reset_index(drop=True)
                     tested_frame.insert(0,"Rank",range(1,len(tested_frame)+1))
                 st.session_state.auto_fno_backtest=tested_frame
                 st.session_state.auto_fno_scan_time=datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
@@ -288,7 +292,7 @@ with tabs[2]:
                 st.error(f"Automatic F&O scan failed: {exc}")
     scan_stats=st.session_state.get("auto_fno_scan_stats")
     if scan_stats:
-        st.caption(f"Last scan: {st.session_state.get('auto_fno_scan_time','')} · F&O universe: {scan_stats.get('universe',0)} · History checked: {scan_stats.get('history_checked',0)} · Indicator candidates: {scan_stats.get('selected',0)}")
+        st.caption(f"Last scan: {st.session_state.get('auto_fno_scan_time','')} · Active NSE F&O underlyings: {scan_stats.get('universe',0)} · Quote-ranked: {scan_stats.get('quote_ranked',0)} · Daily histories checked: {scan_stats.get('history_checked',0)} · Valid indicator signals: {scan_stats.get('selected',0)} · Detailed option shortlist: max 30 unique stocks")
         stocks=st.session_state.get("auto_fno_stocks")
         if stocks is not None and not stocks.empty:
             st.markdown("#### Underlying stock signals")
@@ -301,13 +305,13 @@ with tabs[2]:
         results=st.session_state.get("auto_fno_backtest")
         st.markdown("#### Best historical option strategies")
         if results is not None and not results.empty:
-            st.success(f"{len(results)} contracts completed the minimum 3-trade historical test. Ranked by net points per unit, then win rate and underlying score.")
+            st.success(f"{len(results)} unique stocks passed the minimum 3-trade option backtest. One best CE/PE contract per stock. Ranked by summed historical trade return, then net points, win rate and underlying score. Brokerage, taxes and slippage are not included.")
             st.dataframe(results,use_container_width=True,hide_index=True)
             st.download_button("Download automatic F&O backtest ranking",results.to_csv(index=False),"arvi_automatic_fno_backtest.csv","text/csv")
         else:
             st.warning("No option contract completed at least 3 valid historical trades. No 'best return' pick is shown when evidence is insufficient.")
     else:
-        st.info("Press RUN AUTOMATIC NSE F&O SCAN + BACKTEST. ARVI will find candidate stocks, choose CE/PE automatically and rank them by 30-day option backtest results.")
+        st.info("Press RUN AUTOMATIC NSE F&O SCAN + BACKTEST. ARVI scans all active NSE F&O underlyings, chooses one CE/PE contract per strongest unique stock and ranks the historical results. No manual stock selection is required.")
 
 with tabs[3]:
     st.subheader("NSE equity stock selection")

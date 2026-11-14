@@ -140,7 +140,20 @@ with tabs[0]:
         if (hb["health"]=="STALE").any():
             st.warning("Worker heartbeat is stale. The background service may be stopped or unable to reach the shared database.")
     else:
-        st.info("No worker heartbeat found. Deploy the worker and point dashboard + worker to the same persistent ARVI_DB_PATH.")
+        db_path=os.getenv("ARVI_DB_PATH","arvi_bot.db")
+        st.warning(
+            "No worker heartbeat found in this dashboard's database. "
+            "Kite login is separate from worker connectivity. The dashboard is currently reading "
+            f"'{db_path}'. If this app is hosted on Streamlit Community Cloud while workers run "
+            "on a separate VPS/Docker host, their local SQLite files are different and cannot "
+            "share heartbeats automatically."
+        )
+        st.markdown("**Required deployment:** run the dashboard, index worker and stock F&O worker "
+                    "together on the same always-on VPS using this repository's docker-compose.yml. "
+                    "All three services must use ARVI_DB_PATH=/data/arvi_bot.db and the shared "
+                    "arvi-data volume. Then open the dashboard on the VPS (port 8501), not the "
+                    "separate *.streamlit.app deployment.")
+        st.caption(f"Dashboard database path: {os.path.abspath(db_path)}")
     if ledger["positions"]:
         st.markdown("#### Bot-managed open positions")
         st.dataframe(pd.DataFrame(ledger["positions"]),use_container_width=True,hide_index=True)

@@ -212,3 +212,43 @@ def get_quote_snapshot(kite, exchange, tradingsymbol):
         "timestamp":str(timestamp or ""),
         "age_seconds":age,
     }
+
+
+def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_seconds=180, max_spread_pct=3.0, batch_size=200):
+    """Return only current-session liquid option contracts; never expose stale/dead rows."""
+    if contracts is None or contracts.empty:
+        return pd.DataFrame(), {'checked':0,'eligible':0,'rejected':0,'reason':'No unexpired instruments'}
+    if exchange not in ('NFO','BFO'):
+        raise ValueError('Unsupported derivatives exchange')
+    now=datetime.now(IST)
+    if now.weekday()>=5 or now.strftime('%H:%M')<'09:15' or now.strftime('%H:%M')>'15:30':
+        return pd.DataFrame(), {'checked':0,'eligible':0,'rejected':len(contracts),'reason':'Market is closed; no live contracts are selectable'}
+    eligible=[]; rejected=0
+    symbols=contracts['tradingsymbol'].astype(str).tolist()
+    for start in range(0,len(symbols),batch_size):
+        batch=symbols[start:start+batch_size]
+        quotes=kite.quote([f'{exchange}:{s}' for s in batch])
+        for symbol in batch:
+            q=quotes.get(f'{exchange}:{symbol}')
+            if not q:
+                rejected+=1; continue
+            depth=q.get('depth') or {}
+            bid=float(((depth.get('buy') or [{}])[0]).get('price') or 0)
+            ask=float(((depth.get('sell') or [{}])[0]).get('price') or 0)
+            ltp=float(q.get('last_price') or 0); volume=int(q.get('volume') or 0); oi=int(q.get('oi') or 0)
+            stamp=q.get('timestamp') or q.get('last_trade_time')
+            if not stamp or ltp<=0 or volume<=0 or oi<=0 or bid<=0 or ask<=0 or ask<bid:
+                rejected+=1; continue
+            age=quote_timestamp_age_seconds(stamp,now)
+            if age is None or age>max_age_seconds or pd.Timestamp(stamp).date()!=now.date():
+                rejected+=1; continue
+            spread=(ask-bid)/ltp*100
+            if spread>max_spread_pct:
+                rejected+=1; continue
+            row=contracts[contracts['tradingsymbol'].astype(str)==symbol].iloc[0].to_dict()
+            row.update({'last_price':ltp,'volume':volume,'oi':oi,'bid':bid,'ask':ask,'spread_pct':round(spread,2),'quote_time':str(stamp),'quote_age_seconds':round(age,1)})
+            eligible.append(row)
+    result=pd.DataFrame(eligible)
+    if not result.empty:
+        result=result.sort_values(['volume','oi'],ascending=False).reset_index(drop=True)
+    return result, {'checked':len(symbols),'eligible':len(result),'rejected':rejected,'reason':'Live liquidity filters applied'}

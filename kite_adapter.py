@@ -272,3 +272,97 @@ def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_second
         'underlyings':unique_underlyings,'total_contracts':total_contracts,
         'reason':'Live liquidity filters applied'
     }
+
+
+def build_stock_option_watchlist(kite, exchange="NFO", option_side="PE", underlying_filter=None,
+                                 target_pct=10.0, stop_pct=5.0, batch_size=180):
+    """One near-ATM, highest-OI option per F&O stock, with transparent reference signals."""
+    if exchange not in ("NFO","BFO") or option_side not in ("CE","PE"):
+        raise ValueError("Unsupported derivatives exchange or option side")
+    instruments=pd.DataFrame(kite.instruments(exchange))
+    required={"name","instrument_type","expiry","strike","lot_size","tradingsymbol","instrument_token"}
+    if instruments.empty or not required.issubset(instruments.columns):
+        raise RuntimeError("Derivative instrument master is incomplete")
+    today=datetime.now(IST).date()
+    frame=instruments[instruments["instrument_type"].astype(str).str.upper().eq(option_side)].copy()
+    frame["expiry"]=pd.to_datetime(frame["expiry"],errors="coerce").dt.date
+    frame=frame[frame["expiry"]>=today]
+    if underlying_filter:
+        frame=frame[frame["name"].astype(str).str.upper().eq(underlying_filter.upper())]
+    if frame.empty:
+        return pd.DataFrame(), {"underlyings":0,"candidates":0,"selected":0}
+    # Use nearest expiry per underlying and a narrow ATM window, not every listed strike.
+    frame=frame.sort_values(["name","expiry","strike"])
+    frame=frame[frame["expiry"].eq(frame.groupby("name")["expiry"].transform("min"))]
+    names=sorted(frame["name"].astype(str).unique())
+    spot_keys=[f"{'NSE' if exchange=='NFO' else 'BSE'}:{name}" for name in names]
+    spots={}
+    for i in range(0,len(spot_keys),batch_size):
+        try: spots.update(kite.ltp(spot_keys[i:i+batch_size]))
+        except Exception: pass
+    candidates=[]
+    for name in names:
+        key=f"{'NSE' if exchange=='NFO' else 'BSE'}:{name}"
+        spot=float((spots.get(key) or {}).get("last_price") or 0)
+        rows=frame[frame["name"].astype(str).eq(name)].copy()
+        if spot<=0 or rows.empty: continue
+        strikes=sorted(float(x) for x in rows["strike"].dropna().unique())
+        if not strikes: continue
+        nearest=min(strikes,key=lambda x:abs(x-spot))
+        step=min((b-x for x,b in zip(strikes,strikes[1:]) if b>x),default=0)
+        if step<=0: continue
+        near=[x for x in strikes if abs(x-nearest)<=3*step]
+        candidates.extend(rows[rows["strike"].astype(float).isin(near)].to_dict("records"))
+    if not candidates:
+        return pd.DataFrame(), {"underlyings":len(names),"candidates":0,"selected":0}
+    quote_map={}
+    keys=[f"{exchange}:{r['tradingsymbol']}" for r in candidates]
+    for i in range(0,len(keys),batch_size):
+        quote_map.update(kite.quote(keys[i:i+batch_size]))
+    market_now=datetime.now(IST)
+    market_open=market_now.weekday()<5 and "09:15"<=market_now.strftime("%H:%M")<="15:30"
+    picked=[]
+    for row in candidates:
+        q=quote_map.get(f"{exchange}:{row['tradingsymbol']}",{})
+        ltp=float(q.get("last_price") or 0)
+        volume=int(q.get("volume") or 0)
+        oi=int(q.get("oi") or 0)
+        ohlc=q.get("ohlc") or {}
+        close=float(ohlc.get("close") or 0)
+        net=float(q.get("net_change") or (ltp-close if close else 0))
+        stamp=q.get("timestamp") or q.get("last_trade_time")
+        if ltp<=0 or volume<=0 or oi<=0 or close<=0: continue
+        if not market_open:
+            # Reference quote must have a dated last trade, not an undated cached LTP.
+            if not stamp: continue
+            age=quote_timestamp_age_seconds(stamp,market_now)
+            if age is None or age>4*24*60*60: continue
+        else:
+            age=quote_timestamp_age_seconds(stamp,market_now) if stamp else None
+            if age is None or age>180: continue
+        change_pct=net/close*100 if close else 0
+        if change_pct>=0.5: signal="BUY"
+        elif change_pct<=-0.5: signal="SELL"
+        else: signal="WAIT"
+        entry=ltp
+        if signal=="BUY":
+            target=entry*(1+target_pct/100); stop=entry*(1-stop_pct/100)
+        elif signal=="SELL":
+            target=entry*(1-target_pct/100); stop=entry*(1+stop_pct/100)
+        else:
+            target=entry*(1+target_pct/100); stop=entry*(1-stop_pct/100)
+        picked.append({
+            "Stock":row["name"],"Side":option_side,"Expiry":row["expiry"],
+            "Strike":float(row["strike"]),"Option":row["tradingsymbol"],
+            "Premium":round(ltp,2),"OI":oi,"Volume":volume,
+            "Change %":round(change_pct,2),"Signal":signal,
+            "Entry":round(entry,2),"Target":round(target,2),"Stop Loss":round(stop,2),
+            "Lot Size":int(row["lot_size"]),"Quote Time":str(stamp or ""),
+            "Data Status":"LIVE" if market_open else "LAST SESSION",
+            "Signal Reason":f"Premium change vs previous close: {change_pct:+.2f}%"
+        })
+    result=pd.DataFrame(picked)
+    if not result.empty:
+        result=result.sort_values(["OI","Volume"],ascending=False).drop_duplicates("Stock").reset_index(drop=True)
+    return result, {"underlyings":len(names),"candidates":len(candidates),"selected":len(result),
+                    "reason":"Live quote ranking" if market_open else "Last-session quote reference"}

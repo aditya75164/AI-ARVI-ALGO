@@ -20,6 +20,9 @@ def fetch_index_daily_candles(kite,index,days=180,now=None):
     if not rows:
         raise RuntimeError(f"No daily candles returned for {index}")
     frame=pd.DataFrame(rows).set_index("date").sort_index()
+    today=end.date()
+    if end.weekday()<5 and end.strftime("%H:%M")<"15:35":
+        frame=frame[pd.to_datetime(frame.index).date<today]
     return frame.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
 
 

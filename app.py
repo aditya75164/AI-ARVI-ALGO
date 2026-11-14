@@ -218,6 +218,7 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("NSE Historical Data")
     st.caption("Import official NSE bhavcopy CSV/ZIP files, or fetch historical daily candles through your verified Kite account.")
+    st.link_button("Open NSE All Reports — download official bhavcopy", "https://www.nseindia.com/all-reports")
     uploaded=st.file_uploader("Upload NSE official CM bhavcopy (.csv or .zip)",type=["csv","zip"],key="nse_bhavcopy_upload")
     if uploaded is not None:
         try:

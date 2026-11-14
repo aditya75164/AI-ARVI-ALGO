@@ -29,6 +29,35 @@ div.stButton>button{border-radius:9px;font-weight:600}
 st.title("🧭 AI ARVI ALGO")
 st.caption("Zerodha Kite · NIFTY / BANKNIFTY · Options scanner · Paper execution & risk monitor")
 
+# User-selectable execution preference. Selection alone never submits an order.
+if "trading_mode" not in st.session_state:
+    st.session_state.trading_mode = "Semi-Automatic"
+if "live_trading_armed" not in st.session_state:
+    st.session_state.live_trading_armed = False
+
+st.subheader("Execution preference")
+semi_col, auto_col = st.columns(2)
+with semi_col:
+    st.markdown("### 🧑‍💻 Semi-Automatic")
+    st.caption("AI generates the signal; you review and confirm each entry.")
+    if st.button("Select Semi-Automatic", use_container_width=True,
+                 type="primary" if st.session_state.trading_mode == "Semi-Automatic" else "secondary"):
+        st.session_state.trading_mode = "Semi-Automatic"
+        st.rerun()
+with auto_col:
+    st.markdown("### ⚡ Fully Automatic")
+    st.caption("Designed for rule-based execution after all live safeguards are available.")
+    if st.button("Select Fully Automatic", use_container_width=True,
+                 type="primary" if st.session_state.trading_mode == "Fully Automatic" else "secondary"):
+        st.session_state.trading_mode = "Fully Automatic"
+        st.rerun()
+
+selected_col, safety_col = st.columns(2)
+selected_col.info(f"Selected preference: **{st.session_state.trading_mode}**")
+safety_col.warning("Live execution is not connected in this build. Both preferences currently run PAPER trades only.")
+st.toggle("Live trading master switch", key="live_trading_armed", disabled=True,
+          help="Unavailable until live order execution, broker-side protection and reconciliation are implemented and verified.")
+
 with st.sidebar:
     st.header("Risk & execution")
     capital = st.number_input("Trading capital (₹)", min_value=1000, value=50000, step=5000)

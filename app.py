@@ -38,8 +38,9 @@ with st.sidebar:
         if st.button("Complete Kite login") and req_token:
             try:
                 token = generate_session(req_token)
-                st.success("Kite session created. Store KITE_ACCESS_TOKEN securely in environment.")
-                st.code(token, language=None)
+                st.session_state["kite_access_token"] = token
+                st.session_state["kite_connected"] = True
+                st.success("Kite login successful. Session is active in this browser session; the access token is hidden.")
             except Exception as exc:
                 st.error(f"Login failed: {exc}")
     else:

@@ -11,7 +11,7 @@ IST = ZoneInfo("Asia/Kolkata")
 def worker_is_healthy(worker_name, max_age_seconds=180, db_path=None, now=None):
     rows = dashboard_data(db_path).get("heartbeats", [])
     heartbeat = next((row for row in rows if row.get("worker_name") == worker_name), None)
-    if not heartbeat or heartbeat.get("status") != "RUNNING":
+    if not heartbeat or heartbeat.get("status") not in ("RUNNING", "BLOCKED", "AUTH_REQUIRED"):
         return False
     try:
         stamp = datetime.fromisoformat(heartbeat["heartbeat_time"])

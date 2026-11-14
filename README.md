@@ -8,6 +8,7 @@ Read-only Streamlit dashboard for market movement, volume, trend indicators and 
 - NSE/BSE cash-equity quote monitor with sampled price movement, cumulative volume change, best bid/ask and rolling charts.
 - NFO/BFO current unexpired CE/PE instrument discovery for eligible index and stock derivatives, with live quote, volume and OI monitor.
 - Configurable 1s/2s/5s polling via Streamlit fragments.
+- Single highest-ranked F&O stock shortlist using bullish EMA/VWAP trend, 5-candle momentum, relative volume, RSI and Google News global headline context. Scanner checks up to 25 liquid F&O underlyings after quote-based liquidity ranking.
 
 ## Setup
 Configure `KITE_API_KEY`, `KITE_API_SECRET`, and optionally `KITE_ACCESS_TOKEN` in Streamlit Cloud Secrets or environment variables. Never commit credentials. Login tokens have a daily lifecycle.

@@ -273,7 +273,7 @@ with tabs[2]:
                                     "Wins":int(result["wins"]),
                                     "Losses":int(result["losses"]),
                                     "Net Points / Unit":float(result["net_points_per_unit"]),
-                                    "Backtest Return %":float(result.get("net_return_pct",0.0)),
+                                    "Backtest Return %":round(sum(float(t.get("return_pct",0.0)) for t in result.get("trades",[]))/max(1,len(result.get("trades",[]))),2),
                                     "Strategy":"EMA 9/21 · 5-minute · 30-day"
                                 })
                             except Exception:

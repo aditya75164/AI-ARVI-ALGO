@@ -3,7 +3,7 @@ import pandas as pd
 from kiteconnect import KiteConnect
 import streamlit as st
 
-def _secret(name):
+def get_secret(name):
     value=os.getenv(name)
     if value:
         return value
@@ -18,8 +18,8 @@ INDEX_TOKENS={"NIFTY":256265,"BANKNIFTY":260105}
 INTERVALS={"3minute":"3minute","5minute":"5minute","15minute":"15minute"}
 
 def kite_client():
-    api_key=_secret("KITE_API_KEY")
-    access_token=st.session_state.get("kite_access_token") or _secret("KITE_ACCESS_TOKEN")
+    api_key=get_secret("KITE_API_KEY")
+    access_token=st.session_state.get("kite_access_token") or get_secret("KITE_ACCESS_TOKEN")
     if not api_key or not access_token:
         return None
     kite=KiteConnect(api_key=api_key)
@@ -32,7 +32,7 @@ def login_url():
     return KiteConnect(api_key=key).login_url()
 
 def generate_session(request_token: str) -> str:
-    key=_secret("KITE_API_KEY"); secret=_secret("KITE_API_SECRET")
+    key=_secret("KITE_API_KEY"); secret=get_secret("KITE_API_SECRET")
     if not key or not secret: raise RuntimeError("Kite API credentials are missing")
     session=KiteConnect(api_key=key).generate_session(request_token,api_secret=secret)
     return session["access_token"]

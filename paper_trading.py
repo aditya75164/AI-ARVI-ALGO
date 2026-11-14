@@ -111,6 +111,11 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
         raise ValueError("At least 30 historical candles are required")
     frame = candles.copy()
     frame.columns = [str(x).lower() for x in frame.columns]
+    # Kite historical_data returns timestamps in a date column; preserve them.
+    if "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        if frame["date"].notna().all():
+            frame = frame.set_index("date")
     required = {"open", "high", "low", "close"}
     if not required.issubset(frame.columns):
         raise ValueError("Historical candles must include open/high/low/close")

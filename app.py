@@ -434,11 +434,15 @@ with tabs[8]:
         paper_target=q1.number_input("Target (%)",min_value=0.5,max_value=50.0,value=10.0,step=0.5,key="paper_target")
         paper_trailing=q2.checkbox("Enable trailing stop",value=True,key="paper_trailing")
         paper_trail_pct=q3.number_input("Trailing distance (%)",min_value=0.2,max_value=10.0,value=1.5,step=0.1,key="paper_trail_pct")
-        if st.button("Fetch selected option & calculate paper quantity",key="paper_fetch_contract"):
+        market_now=datetime.now(IST)
+        paper_market_open=(market_now.weekday()<5 and "09:15"<=market_now.strftime("%H:%M")<="15:30")
+        if not paper_market_open:
+            st.warning(f"NSE derivatives market is closed ({market_now.strftime('%A %d-%b-%Y %H:%M IST')}). Live-quote Paper BUY is disabled outside market hours. You can still review trade history and run historical backtests.")
+        if st.button("Fetch selected option & calculate paper quantity",key="paper_fetch_contract",disabled=not paper_market_open):
             try:
                 contract=select_option_contract(kite,paper_underlying,paper_side,paper_moneyness)
                 age=quote_timestamp_age_seconds(contract.get("quote_time")) if contract.get("quote_time") else None
-                if age is None or age>180: raise RuntimeError("Option quote timestamp missing or older than 180 seconds; paper entry blocked.")
+                if age is None or age>180: raise RuntimeError(f"Option quote is stale ({age:.0f}s old)." if age is not None else "Kite did not provide a quote timestamp. Paper entry blocked; retry during market hours.")
                 quantity=quantity_for_risk(paper_capital,paper_risk,contract["option_ltp"],paper_stop,contract["lot_size"])
                 st.session_state.paper_candidate={"contract":contract,"quantity":quantity,"age":age}
             except Exception as exc:

@@ -6,7 +6,7 @@ from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
-    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts
+    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
@@ -168,93 +168,50 @@ with tabs[2]:
         st.dataframe(scan["data"].tail(30),use_container_width=True)
 
 with tabs[3]:
-    st.subheader("NSE/BSE stock F&O CE/PE watchlist")
+    st.subheader("NSE/BSE stock F&O — one premium per stock")
+    st.caption("One near-ATM contract per underlying, chosen by highest OI among nearby strikes in the nearest expiry.")
     ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
     side=st.selectbox("Option side",["CE","PE"])
-    underlying=st.text_input("Underlying name (optional)",placeholder="e.g. RELIANCE, SBIN, INFY")
-    if st.button("Load eligible option contracts"):
+    underlying=st.text_input("Underlying filter (optional)",placeholder="RELIANCE, SBIN, INFY")
+    x,y=st.columns(2)
+    target_pct=x.number_input("Target %",min_value=1.0,max_value=50.0,value=10.0,step=1.0)
+    stop_pct=y.number_input("Stop loss %",min_value=1.0,max_value=30.0,value=5.0,step=0.5)
+    if st.button("Scan one option per stock",type="primary"):
         try:
-            if not connected: st.error("Connect Kite first.")
+            if not connected:
+                st.error("Connect and verify Kite first.")
             else:
-                raw_contracts=fetch_derivative_contracts(kite,ex,underlying.strip() or None,side)
-                with st.spinner('Checking live quotes, volume, OI, depth, timestamp and spread...'):
-                    contracts, stats=filter_live_option_contracts(kite,raw_contracts,exchange=ex)
-                st.session_state.derivative_list=contracts
-                st.session_state.derivative_stats=stats
-        except Exception as exc: st.error(f"Instrument lookup failed: {exc}")
-    contracts=st.session_state.get("derivative_list")
-    stats=st.session_state.get('derivative_stats')
+                with st.spinner("Checking nearest expiry, ATM strikes, premium, volume and OI..."):
+                    watch, stats=build_stock_option_watchlist(
+                        kite,exchange=ex,option_side=side,
+                        underlying_filter=underlying.strip() or None,
+                        target_pct=target_pct,stop_pct=stop_pct
+                    )
+                st.session_state.option_watchlist=watch
+                st.session_state.option_watch_stats=stats
+        except Exception as exc:
+            st.error(f"F&O scan failed: {exc}")
+    watch=st.session_state.get("option_watchlist")
+    stats=st.session_state.get("option_watch_stats")
     if stats:
-        if stats['reason']=='Market closed - reference universe only':
-            st.caption(f"F&O underlyings: {stats['underlyings']} · Option contract rows: {stats['total_contracts']} · Live eligible: 0 (market closed)")
-            st.info("MARKET CLOSED · Counts are instruments, not stock picks. Select a contract to load its last completed-session historical candle. No live bid/ask is available while the exchange is closed.")
-        else:
-            st.caption(f"Unique F&O underlyings: {stats['underlyings']} · Contracts checked: {stats['checked']} · Live eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
-    if contracts is not None and not contracts.empty:
-        market_closed_reference=bool(stats and stats.get("reason")=="Market closed - reference universe only")
-        if market_closed_reference:
-            # Do not show every strike as if it were a ranked premium when OI is unavailable.
-            universe=(contracts.groupby("name",as_index=False)
-                      .agg(available_contracts=("tradingsymbol","count"))
-                      .sort_values("name"))
-            st.dataframe(universe.rename(columns={"name":"Underlying stock","available_contracts":"CE/PE contracts available"}),use_container_width=True)
-            st.caption("Closed-market view shows each underlying once. Highest-OI premium selection is available during market hours when current OI and depth can be verified.")
-        else:
-            view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
-            st.dataframe(view,use_container_width=True)
-            chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
-            row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
-            if st.button("Monitor selected option"):
-                st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen,"instrument_token":int(row["instrument_token"])}
-            sel=st.session_state.selected_derivative
-            if sel and sel["tradingsymbol"]==chosen:
-                @st.fragment(run_every=refresh_seconds)
-                def option_monitor():
-                    try:
-                        now_ist=datetime.now(IST)
-                        market_open=now_ist.weekday()<5 and '09:15'<=now_ist.strftime('%H:%M')<='15:30'
-                        if not market_open:
-                            token=int(sel["instrument_token"])
-                            candles=kite.historical_data(token,now_ist-timedelta(days=7),now_ist,"day")
-                            if not candles:
-                                st.warning("No previous-session historical candle is available for this contract.")
-                                return
-                            last=candles[-1]
-                            candle_date=pd.Timestamp(last["date"]).strftime("%d-%b-%Y")
-                            st.info(f"LAST COMPLETED SESSION · {candle_date} · Historical reference only")
-                            st.metric(f"{chosen} previous close",f"₹{float(last['close']):,.2f}")
-                            hcols=st.columns(3)
-                            hcols[0].metric("Session volume",f"{int(last.get('volume') or 0):,}")
-                            hcols[1].metric("Session high",f"₹{float(last.get('high') or 0):,.2f}")
-                            hcols[2].metric("Session low",f"₹{float(last.get('low') or 0):,.2f}")
-                            if last.get("oi") is not None:
-                                st.metric("End-of-session OI",f"{int(last.get('oi') or 0):,}")
-                            st.caption("Historical candles do not contain live bid/ask depth. This is not a live quote or an executable liquidity check.")
-                            return
-                        q=get_quote_snapshot(kite,ex,chosen)
-                        check=validate_option_liquidity(q,max_age_seconds=180)
-                        if not check["eligible"]:
-                            st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
-                            a,b,c=st.columns(3)
-                            a.metric("LTP (reference only)",f"₹{q['last_price']:,.2f}")
-                            b.metric("Volume",f"{q['volume']:,}")
-                            c.metric("Open interest",f"{q['oi']:,}")
-                            st.caption(f"Bid / Ask: {q['bid']:g} / {q['ask']:g} · Quote time: {q['timestamp'] or 'missing'}")
-                            return
-                        st.success(f"{'LIVE' if market_open else 'LAST SESSION REFERENCE'} · LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
-                        st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
-                        a,b,c=st.columns(3)
-                        a.metric("Volume",f"{q['volume']:,}")
-                        b.metric("Open interest",f"{q['oi']:,}")
-                        c.metric("Bid / Ask",f"{q['bid']:g} / {q['ask']:g}")
-                        st.caption(f"Quote time: {q['timestamp'] or 'not supplied'}")
-                    except Exception as exc: st.error(f"Option quote failed: {exc}")
-                option_monitor()
-    elif contracts is not None and contracts.empty:
-        st.warning('No contracts passed the live liquidity checks. This is separate from the total number of F&O stocks/option contracts.')
+        st.caption(f"Unique F&O stocks: {stats['underlyings']} · Near-ATM contracts checked: {stats['candidates']} · Stocks with valid premium/OI: {stats['selected']}")
+        if stats["reason"]=="Last-session quote reference":
+            st.info("LAST SESSION REFERENCE · Premium, volume and OI are from the latest dated Kite quote. Signals are indicative only; no live bid/ask or executable price is implied.")
+    if watch is not None and not watch.empty:
+        st.dataframe(watch,use_container_width=True,hide_index=True)
+        buys=int((watch["Signal"]=="BUY").sum())
+        sells=int((watch["Signal"]=="SELL").sum())
+        waits=int((watch["Signal"]=="WAIT").sum())
+        p,q,r=st.columns(3)
+        p.metric("BUY",buys)
+        q.metric("SELL",sells)
+        r.metric("WAIT",waits)
+        st.download_button("Download selected stock signals (CSV)",watch.to_csv(index=False),"arvi_option_watchlist.csv","text/csv")
+    elif stats:
+        st.warning("No contracts have usable premium, volume, OI and dated quote data. No false picks are displayed.")
     else:
-        st.caption('Load eligible contracts. During market hours the list uses live quotes; when closed it uses the most recent working-session quotes as reference data.')
-
+        st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
+    
 with tabs[4]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.

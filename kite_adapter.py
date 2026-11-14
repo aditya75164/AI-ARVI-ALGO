@@ -107,14 +107,21 @@ def get_index_ltp(kite, underlying: str) -> float:
     return ltp
 
 def select_option_contract(kite, underlying: str, option_side: str, moneyness="ATM"):
+    """Select an option for any currently listed NSE NFO stock or index."""
+    if not underlying or option_side not in ("CE", "PE"):
+        raise ValueError("Choose a valid NSE F&O underlying and CE/PE side")
     if moneyness not in ("ATM", "1 ITM", "2 ITM", "1 OTM", "2 OTM"):
         raise ValueError("Unsupported moneyness")
-    spot = get_index_ltp(kite, underlying)
-    contracts = fetch_option_contracts(kite, underlying, option_side)
+    contracts = fetch_derivative_contracts(kite, "NFO", underlying, option_side)
     if contracts.empty:
-        raise RuntimeError(f"No unexpired {underlying} {option_side} contracts found")
+        raise RuntimeError(f"No unexpired NSE NFO {underlying} {option_side} contracts found")
     expiry = contracts["expiry"].min()
     contracts = contracts[contracts["expiry"] == expiry].copy()
+    quote_key = INDEX_QUOTE_KEYS.get(underlying, f"NSE:{underlying}")
+    spot_data = kite.ltp([quote_key]).get(quote_key, {})
+    spot = float(spot_data.get("last_price") or 0)
+    if spot <= 0:
+        raise RuntimeError(f"No valid NSE spot/index LTP returned for {underlying} ({quote_key})")
     strikes = sorted(float(x) for x in contracts["strike"].dropna().unique())
     if not strikes:
         raise RuntimeError("Option strike list is empty")
@@ -138,7 +145,6 @@ def select_option_contract(kite, underlying: str, option_side: str, moneyness="A
     sell_levels = depth.get("sell") or []
     buy = (buy_levels or [{}])[0].get("price", 0) or 0
     sell = (sell_levels or [{}])[0].get("price", 0) or 0
-    # Five-level order-book depth snapshot, not executed trade volume.
     buyer_depth_qty = sum(int(level.get("quantity") or 0) for level in buy_levels[:5])
     seller_depth_qty = sum(int(level.get("quantity") or 0) for level in sell_levels[:5])
     buyer_seller_depth_ratio = (buyer_depth_qty / seller_depth_qty) if seller_depth_qty > 0 else None
@@ -160,6 +166,7 @@ def select_option_contract(kite, underlying: str, option_side: str, moneyness="A
         "buyer_seller_depth_ratio": buyer_seller_depth_ratio,
         "quote_time": str(quote.get("timestamp") or quote.get("last_trade_time") or "")
     }
+
 
 def get_option_ltp(kite, tradingsymbol: str) -> float:
     key = f"NFO:{tradingsymbol}"

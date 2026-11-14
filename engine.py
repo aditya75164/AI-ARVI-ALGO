@@ -42,6 +42,13 @@ def add_dtc_style_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     d["EMA_BULL"]=d[[f"EMA_{p}" for p in EMA_PERIODS]].apply(lambda r: all(pd.notna(r)) and all(r.iloc[i]>r.iloc[i+1] for i in range(len(r)-1)),axis=1)
     d["EMA_BEAR"]=d[[f"EMA_{p}" for p in EMA_PERIODS]].apply(lambda r: all(pd.notna(r)) and all(r.iloc[i]<r.iloc[i+1] for i in range(len(r)-1)),axis=1)
     d["ATR_ACTIVE"]=d["ATR_PCT"]>=0.08
+    d["VOLUME_SMA_20"]=vol.rolling(20,min_periods=5).mean()
+    d["RELATIVE_VOLUME"]=vol/d["VOLUME_SMA_20"].replace(0,np.nan)
+    d["VOLUME_CHANGE_PCT"]=vol.pct_change().replace([np.inf,-np.inf],np.nan)*100
+    d["TREND_LABEL"]=np.select(
+        [d["EMA_BULL"] & (d["Close"]>d["VWAP"]), d["EMA_BEAR"] & (d["Close"]<d["VWAP"])],
+        ["BULLISH TREND","BEARISH TREND"], default="SIDEWAYS / MIXED"
+    )
     return d
 
 def build_signal(data: pd.DataFrame) -> dict:

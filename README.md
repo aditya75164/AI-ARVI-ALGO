@@ -53,13 +53,16 @@ A separate background process is provided in `bot_worker.py`; do not run the tra
 1. Copy `bot_config.example.json` to `bot_config.json` and adjust risk limits after reviewing them.
 2. Set worker environment variables: `KITE_API_KEY`, `KITE_ACCESS_TOKEN`, `ARVI_BOT_CONFIG=bot_config.json`, and `ARVI_DB_PATH=/data/arvi_bot.db` on a persistent volume.
 3. Build/run with `docker build -f Dockerfile.worker -t arvi-worker .` and `docker run --restart unless-stopped --env-file worker.env -v arvi-data:/data arvi-worker`.
-4. Keep `ARVI_LIVE_TRADING` unset initially. The worker then logs trade candidates only and does not send orders.
-5. Only after independent paper/sandbox validation, broker order lifecycle tests, persistent storage, monitoring and explicit operator approval should a deployment administrator set `ARVI_LIVE_TRADING=YES`.
+4. Keep both `ARVI_LIVE_TRADING=NO` and `ARVI_LIVE_TRADING_APPROVED=NO`. The worker then logs trade candidates only and does not send orders.
+5. The config must also explicitly contain `"execution_mode": "AUTO"` and `"live_trading_approved": true` before the worker considers live execution. Defaults are `SIGNAL_ONLY` and `false`.
+6. Live order submission requires all four approvals: both environment keys set to `YES`, plus both config approvals above. Do not change these values until the operator has reviewed the final risk configuration and approved it.
 
 ### Worker strategy and safeguards
 - Scans NIFTY and BANK NIFTY using the existing 5-minute six-EMA/VWAP/RSI/ATR signal engine.
 - BUY CE / BUY PE candidate uses nearest-expiry ATM option, recent two-sided quote, volume/OI, spread gate and 5-minute option ATR for stop/target references.
-- Risk-based whole-lot sizing, max lots, maximum open positions, daily broker P&L loss gate, trading time window and duplicate-position/order checks.
+- Risk-based whole-lot sizing, max lots, maximum open positions, daily broker P&L loss gate, trading time window, fresh quote/depth/spread checks and duplicate-position/order checks.
+- Two-key live execution lock: `ARVI_LIVE_TRADING=YES` AND `ARVI_LIVE_TRADING_APPROVED=YES`, plus config `execution_mode=AUTO` AND `live_trading_approved=true`. Missing or malformed approvals fail closed.
+- Entry is a LIMIT order; broker order history is checked for fills; unfilled orders are cancelled where possible; partial fills are rechecked and protective SL submission is attempted only for confirmed filled quantity. Broker acknowledgement is not treated as a fill.
 - When live mode is explicitly enabled, it submits LIMIT entry orders, verifies broker fills, protects filled quantity with a broker-side SL, and monitors target exits in the always-on worker. Partial fills are handled by cancelling remainder and protecting filled quantity.
 - Worker must stay running and retain API access for target monitoring. Broker-side SL remains with the exchange/broker, but target exits are worker-managed; outages can delay target exits.
 - Initial worker is for NIFTY/BANKNIFTY index options only. Stock F&O and cash-equity auto-bots are not yet wired into the worker.
@@ -92,3 +95,7 @@ This deployment keeps the Streamlit dashboard, NIFTY/BANKNIFTY worker and stock 
 The dashboard and both workers use `/data/arvi_bot.db` from the same named volume. Workers require a current `KITE_ACCESS_TOKEN`; the token created inside the dashboard browser session is not automatically transferred to the worker containers. Renew the token through the approved Kite login flow and update the host's `.env`, then run `docker compose up -d`.
 
 **Safety default:** Compose explicitly sets `ARVI_LIVE_TRADING=NO`. The index worker is therefore candidate-only; the stock F&O worker is signal-only and never sends orders. This setup does not prove broker execution safety or guarantee uptime/profit. Do not change the live-trading flag as part of deployment; real-money execution needs separate controlled end-to-end validation and explicit approval.
+
+
+### Windows local safety state
+The Windows dashboard launcher deliberately forces both live environment approvals to `NO` after loading `.env`. It does not start the order worker. This is intentional until the operator reviews and approves the separate worker configuration. The current auto-execution worker handles NIFTY/BANKNIFTY index options only; the stock F&O scanner remains signal-only and is not wired to place stock-option orders.

@@ -22,7 +22,11 @@ def add_dtc_style_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     gain=delta.clip(lower=0).ewm(alpha=1/14,adjust=False,min_periods=14).mean()
     loss=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False,min_periods=14).mean()
     rs=gain/loss.replace(0,np.nan)
-    d["RSI_14"]=100-100/(1+rs)
+    rsi=100-100/(1+rs)
+    rsi=rsi.mask((loss==0)&(gain>0),100.0)
+    rsi=rsi.mask((gain==0)&(loss>0),0.0)
+    rsi=rsi.mask((gain==0)&(loss==0),50.0)
+    d["RSI_14"]=rsi
     vol=d["Volume"].fillna(0).astype(float)
     typical=(high+low+close)/3
     if isinstance(d.index,pd.DatetimeIndex):

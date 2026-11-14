@@ -1,111 +1,241 @@
-import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
-from kite_adapter import kite_client, login_url, generate_session, fetch_index_candles, get_secret
+from kite_adapter import (
+    kite_client, login_url, generate_session, fetch_index_candles,
+    select_option_contract, get_option_ltp, get_secret
+)
+from paper_trading import (
+    quantity_for_risk, open_paper_trade, mark_paper_trade,
+    close_paper_trade, can_open_trade, daily_realized_pnl
+)
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
 IST = ZoneInfo("Asia/Kolkata")
+if "paper_trades" not in st.session_state:
+    st.session_state.paper_trades = []
+if "last_scan" not in st.session_state:
+    st.session_state.last_scan = None
+if "selected_contract" not in st.session_state:
+    st.session_state.selected_contract = None
+
 st.markdown("""<style>
-.stApp{background:#f4f7fb;color:#14243a}.block-container{max-width:1440px;padding-top:1.4rem}
-[data-testid="stMetric"]{background:white;border:1px solid #dbe4ef;padding:14px;border-radius:12px}
+.stApp{background:#f4f7fb;color:#14243a}.block-container{max-width:1440px;padding-top:1.2rem}
+[data-testid="stMetric"]{background:white;border:1px solid #dbe4ef;padding:12px;border-radius:12px}
+div.stButton>button{border-radius:9px;font-weight:600}
 </style>""", unsafe_allow_html=True)
 st.title("🧭 AI ARVI ALGO")
-st.caption("Standalone Zerodha options trading terminal · DTC-inspired trend framework · Paper trading first")
+st.caption("Zerodha Kite · NIFTY / BANKNIFTY · Options scanner · Paper execution & risk monitor")
 
 with st.sidebar:
     st.header("Risk & execution")
+    capital = st.number_input("Trading capital (₹)", min_value=1000, value=50000, step=5000)
+    risk_pct = st.number_input("Risk per trade (%)", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
     target = st.number_input("Target (%)", min_value=0.5, max_value=20.0, value=3.0, step=0.5)
     stop = st.number_input("Stop-loss (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5)
     trail_on = st.toggle("Trailing stop-loss", value=True)
     trail_pct = st.number_input("Trailing SL (%)", min_value=0.25, max_value=10.0, value=1.0, step=0.25, disabled=not trail_on)
-    capital = st.number_input("Trading capital (₹)", min_value=1000, value=50000, step=5000)
-    risk_pct = st.number_input("Risk per trade (%)", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
     max_trades = st.number_input("Maximum trades/day", min_value=1, max_value=10, value=3)
     daily_loss = st.number_input("Daily loss limit (₹)", min_value=500, value=2000, step=500)
     st.divider()
-    st.subheader("Broker connection")
+    st.subheader("Kite connection")
     api_key_set = bool(get_secret("KITE_API_KEY"))
     api_secret_set = bool(get_secret("KITE_API_SECRET"))
     st.write("API key:", "Configured" if api_key_set else "Missing")
     st.write("API secret:", "Configured" if api_secret_set else "Missing")
     if api_key_set and api_secret_set:
-        url = login_url()
-        st.link_button("Connect Zerodha Kite", url)
-        req_token = st.text_input("Request token after Kite login", type="password")
-        if st.button("Complete Kite login") and req_token:
-            try:
-                token = generate_session(req_token)
-                st.session_state["kite_access_token"] = token
-                st.session_state["kite_connected"] = True
-                st.success("Kite login successful. Session is active in this browser session; the access token is hidden.")
-            except Exception as exc:
-                st.error(f"Login failed: {exc}")
-    else:
-        st.info("Set KITE_API_KEY and KITE_API_SECRET in your deployment secrets. Never paste them into chat.")
-
-st.warning("PAPER MODE ONLY. This standalone build does not place live orders. Live execution is intentionally not implemented/enabled until broker setup, testing and explicit risk approval.")
-col1,col2,col3,col4=st.columns(4)
-col1.metric("Mode","PAPER")
-col2.metric("Target",f"{target:.2f}%")
-col3.metric("Stop-loss",f"{stop:.2f}%")
-col4.metric("Risk / trade",f"₹{capital*risk_pct/100:,.0f}")
-
-tab1,tab2,tab3=st.tabs(["Market scanner","Paper trade plan","Strategy guide"])
-with tab1:
-    market=st.selectbox("Underlying",["NIFTY","BANKNIFTY"])
-    timeframe=st.selectbox("Signal timeframe",["3minute","5minute","15minute"])
-    if st.button("Scan market",type="primary"):
         try:
-            kite=kite_client()
-            if kite is None:
-                st.error("Kite session unavailable. Configure KITE_API_KEY and KITE_ACCESS_TOKEN.")
+            st.link_button("1 · Login to Zerodha Kite", login_url())
+        except Exception as exc:
+            st.error(f"Login URL error: {exc}")
+        request_token = st.text_input("2 · Paste request_token from callback URL", type="password")
+        if st.button("Complete Kite login", use_container_width=True):
+            try:
+                token = generate_session(request_token)
+                st.session_state["kite_access_token"] = token
+                st.success("Kite session token received. Press Verify connection.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Kite login failed: {exc}")
+    else:
+        st.warning("Add KITE_API_KEY and KITE_API_SECRET to Streamlit deployment Secrets.")
+    if st.button("Verify Kite connection", use_container_width=True):
+        try:
+            client = kite_client()
+            if client is None:
+                st.error("No session. Complete Kite login or configure KITE_ACCESS_TOKEN.")
             else:
-                candles=fetch_index_candles(kite,market,timeframe)
+                profile = client.profile()
+                st.session_state["kite_profile"] = profile
+                st.success(f"Connected: {profile.get('user_name') or profile.get('user_id')}")
+        except Exception as exc:
+            st.session_state.pop("kite_profile", None)
+            st.error(f"Connection verification failed: {exc}")
+
+kite = kite_client()
+connected = bool(st.session_state.get("kite_profile")) and kite is not None
+mode_col, conn_col, risk_col, pnl_col = st.columns(4)
+mode_col.metric("Execution mode", "PAPER ONLY")
+conn_col.metric("Kite API", "Verified" if connected else "Not verified")
+risk_col.metric("Risk / trade", f"₹{capital*risk_pct/100:,.0f}")
+pnl_col.metric("Today's realized P&L", f"₹{daily_realized_pnl(st.session_state.paper_trades):,.2f}")
+st.warning("Live order placement is deliberately disabled. All entries and exits below are simulated paper trades; no broker order is sent.")
+
+scanner_tab, options_tab, positions_tab, guide_tab = st.tabs(
+    ["Market scanner", "Option chain & paper entry", "Positions & risk", "Strategy guide"]
+)
+
+with scanner_tab:
+    left, right = st.columns([1, 1])
+    with left:
+        underlying = st.selectbox("Underlying index", ["NIFTY", "BANKNIFTY"], key="scan_underlying")
+    with right:
+        timeframe = st.selectbox("Signal timeframe", ["3minute", "5minute", "15minute"], key="scan_timeframe")
+    if st.button("Scan index", type="primary"):
+        try:
+            if kite is None:
+                st.error("Connect and verify Kite first.")
+            else:
+                candles = fetch_index_candles(kite, underlying, timeframe)
                 if candles.empty:
-                    st.error("No candle data returned. Check session, instrument token and market hours.")
+                    st.error("Kite returned no candles. Check market hours and API access.")
                 else:
-                    analysed=add_dtc_style_indicators(candles)
-                    result=build_signal(analysed)
-                    st.session_state["last_scan"]={"market":market,"timeframe":timeframe,"result":result,"data":analysed}
+                    analysed = add_dtc_style_indicators(candles)
+                    result = build_signal(analysed)
+                    st.session_state.last_scan = {
+                        "market": underlying, "timeframe": timeframe,
+                        "result": result, "data": analysed
+                    }
         except Exception as exc:
             st.error(f"Scan failed: {exc}")
-    scan=st.session_state.get("last_scan")
+    scan = st.session_state.last_scan
     if scan:
-        res=scan["result"]
-        a,b,c=st.columns(3)
-        a.metric("Market bias",res["bias"])
-        b.metric("Signal",res["signal"])
-        c.metric("Confirmation score",f'{res["score"]}/100')
-        st.write("**Reason:**",res["reason"])
-        st.dataframe(scan["data"].tail(20),use_container_width=True)
-        if res["signal"] in ("BUY CE","BUY PE"):
-            st.info("Underlying direction confirmed. Next step: choose a liquid ATM/1-ITM option using live option-chain quotes, spread and OI filters. Contract selection is not yet connected in this foundation build.")
-with tab2:
-    st.subheader("Paper trade calculator")
-    side=st.radio("Option side",["CE","PE"],horizontal=True)
-    premium=st.number_input("Option premium entry (₹)",min_value=0.05,value=100.0,step=1.0)
-    qty=st.number_input("Quantity",min_value=1,value=25,step=25)
-    entry_value=premium*qty
-    target_price=premium*(1+target/100)
-    stop_price=premium*(1-stop/100)
-    st.write(f"**Estimated target premium:** ₹{target_price:.2f}")
-    st.write(f"**Stop-loss premium:** ₹{stop_price:.2f}")
-    st.write(f"**Gross target P&L:** ₹{(target_price-premium)*qty:,.2f}")
-    st.write(f"**Gross stop P&L:** ₹{(stop_price-premium)*qty:,.2f}")
-    st.caption("Illustrative calculation only; excludes brokerage, taxes, slippage and partial fills.")
-with tab3:
-    st.markdown("""**DTC-inspired public-behavior approximation (not the invite-only DTC source code):**
+        result = scan["result"]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Market bias", result["bias"])
+        c2.metric("Signal", result["signal"])
+        c3.metric("Score", f'{result["score"]}/100')
+        c4.metric("Last candle", str(scan["data"].index[-1]))
+        st.write("**Reason:**", result["reason"])
+        st.dataframe(scan["data"].tail(30), use_container_width=True)
+        if result["signal"] in ("BUY CE", "BUY PE"):
+            st.success(f"Direction signal: {result['signal']}. Go to Option chain tab to fetch and inspect the matching contract.")
+            st.session_state["suggested_side"] = "CE" if result["signal"] == "BUY CE" else "PE"
+
+with options_tab:
+    st.subheader("Live NFO option contract selector")
+    c1, c2, c3 = st.columns(3)
+    opt_underlying = c1.selectbox("Underlying", ["NIFTY", "BANKNIFTY"], key="opt_underlying")
+    suggested = st.session_state.get("suggested_side", "CE")
+    opt_side = c2.selectbox("Option type", ["CE", "PE"], index=0 if suggested == "CE" else 1)
+    moneyness = c3.selectbox("Strike selection", ["ATM", "1 ITM", "2 ITM", "1 OTM", "2 OTM"])
+    if st.button("Fetch live option contract", type="primary"):
+        try:
+            if kite is None:
+                st.error("Connect and verify Kite first.")
+            else:
+                contract = select_option_contract(kite, opt_underlying, opt_side, moneyness)
+                st.session_state.selected_contract = contract
+        except Exception as exc:
+            st.session_state.selected_contract = None
+            st.error(f"Option selection failed: {exc}")
+    contract = st.session_state.selected_contract
+    if contract:
+        a,b,c,d = st.columns(4)
+        a.metric("Spot", f'{contract["spot_ltp"]:,.2f}')
+        b.metric("Option premium", f'₹{contract["option_ltp"]:,.2f}')
+        c.metric("Strike / expiry", f'{contract["strike"]:g} · {contract["expiry"]}')
+        d.metric("Lot size", contract["lot_size"])
+        st.write(f'**Contract:** {contract["tradingsymbol"]} · {contract["side"]}')
+        e,f,g = st.columns(3)
+        e.metric("Bid", f'₹{contract["best_bid"]:,.2f}' if contract["best_bid"] else "Unavailable")
+        f.metric("Ask", f'₹{contract["best_ask"]:,.2f}' if contract["best_ask"] else "Unavailable")
+        g.metric("Spread", f'{contract["spread_pct"]:.2f}%' if contract["spread_pct"] is not None else "Unavailable")
+        if contract["spread_pct"] is not None and contract["spread_pct"] > 1.0:
+            st.warning("Bid/ask spread exceeds 1%. Contract is illiquid or costly; avoid paper entry unless reviewed.")
+        if contract["volume"] == 0 or contract["oi"] == 0:
+            st.warning("Volume or open interest is zero. Liquidity is not confirmed.")
+        qty = quantity_for_risk(capital, risk_pct, contract["option_ltp"], stop, contract["lot_size"])
+        st.write(f"**Risk-based quantity:** {qty} units ({qty // contract['lot_size']} lots) · budget ₹{capital*risk_pct/100:,.0f}")
+        if qty == 0:
+            st.warning("Capital/risk budget is insufficient for one lot at this premium and stop distance.")
+        else:
+            if st.button("Open PAPER trade", type="primary"):
+                allowed, reason = can_open_trade(st.session_state.paper_trades, max_trades, daily_loss)
+                if not allowed:
+                    st.error(reason)
+                else:
+                    trade = open_paper_trade(contract, qty, target, stop, trail_on, trail_pct)
+                    st.session_state.paper_trades.append(trade)
+                    st.success(f'Paper position opened: {contract["tradingsymbol"]} · {qty} units')
+                    st.rerun()
+        st.caption("Option contracts, expiry, lot size and quotes are read from Kite NFO instruments and quote endpoints. The chosen contract is the nearest expiry and selected moneyness.")
+
+with positions_tab:
+    st.subheader("Paper position monitor")
+    open_positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
+    if st.button("Refresh LTP & evaluate exits", disabled=(not open_positions or kite is None)):
+        for index, trade in enumerate(st.session_state.paper_trades):
+            if trade["status"] == "OPEN":
+                try:
+                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
+                    st.session_state.paper_trades[index] = mark_paper_trade(trade, ltp)
+                except Exception as exc:
+                    st.error(f'{trade["tradingsymbol"]}: quote/exit check failed: {exc}')
+        st.rerun()
+    if open_positions:
+        for trade in open_positions:
+            st.markdown(f'**{trade["tradingsymbol"]}** · {trade["quantity"]} units · {trade["status"]}')
+            p1,p2,p3,p4 = st.columns(4)
+            p1.metric("Entry", f'₹{trade["entry_price"]:.2f}')
+            p2.metric("Last marked", f'₹{trade["ltp"]:.2f}')
+            p3.metric("Current P&L", f'₹{trade["pnl"]:,.2f}')
+            p4.metric("Stop / target", f'₹{trade["stop_price"]:.2f} / ₹{trade["target_price"]:.2f}')
+            if st.button(f'Refresh quote & manage {trade["tradingsymbol"]}', key=f'refresh_{trade["id"]}', disabled=(kite is None)):
+                try:
+                    idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
+                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
+                    st.session_state.paper_trades[idx] = mark_paper_trade(trade, ltp)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not refresh position: {exc}")
+            if st.button(f'Manual paper exit {trade["tradingsymbol"]}', key=f'exit_{trade["id"]}', disabled=(kite is None)):
+                try:
+                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
+                    idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
+                    st.session_state.paper_trades[idx] = close_paper_trade(trade, ltp)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Paper exit failed: {exc}")
+            st.divider()
+    else:
+        st.info("No open paper positions.")
+    if st.session_state.paper_trades:
+        st.subheader("Trade history")
+        history = pd.DataFrame(st.session_state.paper_trades)
+        cols = ["tradingsymbol","status","quantity","entry_price","ltp","stop_price","target_price","pnl","exit_reason","opened_at","closed_at"]
+        st.dataframe(history[[c for c in cols if c in history.columns]], use_container_width=True)
+    realized = daily_realized_pnl(st.session_state.paper_trades)
+    st.metric("Daily realized P&L", f"₹{realized:,.2f}")
+    if realized <= -abs(daily_loss):
+        st.error("Daily loss limit reached. New paper trades blocked.")
+
+with guide_tab:
+    st.markdown("""**Signal framework (research approximation, not proprietary DTC code):**
 - Six EMA alignment: 30, 35, 40, 45, 50 and 60.
-- Higher-timeframe trend confirmation is planned; this initial scanner checks the selected candle timeframe only.
-- ATR volatility filter avoids very quiet conditions.
-- VWAP and RSI provide additional intraday confirmation.
-- Signal is emitted only on a completed candle; no forced trades when filters disagree.
+- ATR activity filter, VWAP and RSI confirmation.
+- CE: bullish EMA stack, close above VWAP and RSI strength.
+- PE: bearish EMA stack, close below VWAP and RSI weakness.
+- Incomplete confirmation returns WAIT.
 
-**CE:** bullish EMA stack + close above VWAP + RSI strength + ATR activity.
-**PE:** bearish EMA stack + close below VWAP + RSI weakness + ATR activity.
+**Execution protections in this build:**
+- Real option contract and quote discovery from Kite.
+- Lot-size-aware quantity from capital-at-risk.
+- Paper target, initial stop and trailing stop.
+- Daily trade-count and realized-loss blocks.
+- No real order placement; paper positions persist only for the current Streamlit session. Restarting the app clears them.
 
-This is a research framework, not a profit guarantee. Backtest and paper trade before considering live capital.""")
-st.caption(f"Local time: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST")
+This does not guarantee profits. Use a persistent trade journal, market-hours tests and extended paper forward testing before considering any live workflow.""")
+st.caption(f"Local time: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Live orders disabled")

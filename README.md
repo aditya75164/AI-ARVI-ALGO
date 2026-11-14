@@ -68,3 +68,11 @@ A separate background process is provided in `bot_worker.py`; do not run the tra
 - This repository commit does not deploy or start a background service. A separate always-on host, environment secrets, persistent disk/database, logs and alerting must be configured.
 - Never put API secrets in GitHub files or chat. Kite access tokens expire and require renewal.
 - Live execution is OFF by default. Do not enable live mode until the broker account, lot sizes, margins, order types, SL behavior, partial fills, rejected orders, network recovery and daily risk limits are tested in a controlled environment.
+
+
+## Stock F&O background scanner
+- `stock_fno_worker.py` runs a separate 15-minute stock F&O scan by default.
+- It ranks F&O underlyings, maps trend BUY/SELL to CE/PE, checks near-ATM contracts, quote freshness, bid/ask spread, volume, OI, buyer-side depth and estimated theta.
+- It writes scan candidates and worker heartbeat to the same SQLite ledger. It is signal-only and does not place, modify or cancel orders.
+- Start a second worker container from the same image with command override: `python stock_fno_worker.py`.
+- Both the Streamlit dashboard and both workers must mount the same persistent `ARVI_DB_PATH` database file. Separate containers need a shared filesystem volume; a local SQLite file in two separate containers is not shared automatically.

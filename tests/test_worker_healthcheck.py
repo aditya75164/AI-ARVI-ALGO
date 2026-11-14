@@ -27,3 +27,23 @@ def test_healthcheck_rejects_stale_or_stopped_worker(tmp_path):
     assert not worker_is_healthy("STOCK_FNO", db_path=db)
     bot_ledger.update_worker_heartbeat("STOCK_FNO", "STOPPED", "stopped", db_path=db)
     assert not worker_is_healthy("STOCK_FNO", db_path=db)
+
+
+def test_healthcheck_accepts_fresh_safety_blocked_worker(tmp_path):
+    db = str(tmp_path / "blocked.db")
+    now = datetime.now(IST)
+    bot_ledger.init_db(db)
+    bot_ledger.update_worker_heartbeat(
+        "INDEX_OPTIONS", "BLOCKED", "Unmanaged broker position requires manual review", db_path=db
+    )
+    assert worker_is_healthy("INDEX_OPTIONS", db_path=db, now=now)
+
+
+def test_healthcheck_accepts_fresh_auth_required_worker(tmp_path):
+    db = str(tmp_path / "auth.db")
+    now = datetime.now(IST)
+    bot_ledger.init_db(db)
+    bot_ledger.update_worker_heartbeat(
+        "INDEX_OPTIONS", "AUTH_REQUIRED", "Kite session needs renewal", db_path=db
+    )
+    assert worker_is_healthy("INDEX_OPTIONS", db_path=db, now=now)

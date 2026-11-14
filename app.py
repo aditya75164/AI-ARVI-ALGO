@@ -186,8 +186,8 @@ with tabs[3]:
     stats=st.session_state.get('derivative_stats')
     if stats:
         st.caption(f"Checked {stats['checked']} contracts · Eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
-        if stats['reason'].startswith('Market is closed'):
-            st.warning('Market is closed. Previous-session quotes are not treated as live picks.')
+        if stats['reason']=='Last working session data':
+            st.info('LAST WORKING SESSION DATA · Market is currently closed. These are reference quotes from the most recent trading session, not live prices.')
     if contracts is not None and not contracts.empty:
         view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange"]]
         st.dataframe(view,use_container_width=True)
@@ -201,7 +201,9 @@ with tabs[3]:
             def option_monitor():
                 try:
                     q=get_quote_snapshot(kite,ex,chosen)
-                    check=validate_option_liquidity(q)
+                    now_ist=datetime.now(IST)
+                    market_open=now_ist.weekday()<5 and '09:15'<=now_ist.strftime('%H:%M')<='15:30'
+                    check=validate_option_liquidity(q,max_age_seconds=180 if market_open else 4*24*60*60)
                     if not check["eligible"]:
                         st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
                         a,b,c=st.columns(3)
@@ -210,7 +212,7 @@ with tabs[3]:
                         c.metric("Open interest",f"{q['oi']:,}")
                         st.caption(f"Bid / Ask: {q['bid']:g} / {q['ask']:g} · Quote time: {q['timestamp'] or 'missing'}")
                         return
-                    st.success(f"LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
+                    st.success(f"{'LIVE' if market_open else 'LAST SESSION REFERENCE'} · LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
                     st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
                     a,b,c=st.columns(3)
                     a.metric("Volume",f"{q['volume']:,}")
@@ -220,9 +222,9 @@ with tabs[3]:
                 except Exception as exc: st.error(f"Option quote failed: {exc}")
             option_monitor()
     elif contracts is not None and contracts.empty:
-        st.warning('NO LIVE-LIQUID CONTRACTS FOUND. Zero volume/OI, stale quotes, missing depth and wide spreads are excluded.')
+        st.warning('NO ELIGIBLE CONTRACTS FOUND in the last available session. Zero volume/OI, missing depth, stale quotes and wide spreads remain excluded.')
     else:
-        st.caption('Load contracts during market hours. Only live, liquid CE/PE contracts will appear.')
+        st.caption('Load eligible contracts. During market hours the list uses live quotes; when closed it uses the most recent working-session quotes as reference data.')
 
 with tabs[4]:
     st.markdown("""### Indicator definitions

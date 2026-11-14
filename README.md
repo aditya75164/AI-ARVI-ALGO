@@ -76,3 +76,19 @@ A separate background process is provided in `bot_worker.py`; do not run the tra
 - It writes scan candidates and worker heartbeat to the same SQLite ledger. It is signal-only and does not place, modify or cancel orders.
 - Start a second worker container from the same image with command override: `python stock_fno_worker.py`.
 - Both the Streamlit dashboard and both workers must mount the same persistent `ARVI_DB_PATH` database file. Separate containers need a shared filesystem volume; a local SQLite file in two separate containers is not shared automatically.
+
+
+## Single-host Docker Compose deployment (dashboard + workers)
+This deployment keeps the Streamlit dashboard, NIFTY/BANKNIFTY worker and stock F&O signal scanner on one host and mounts the same persistent SQLite volume into all three containers.
+
+1. Install Docker Engine and the Docker Compose plugin on an always-on Linux host/VPS.
+2. Clone this repository and copy the environment template: `cp .env.example .env`.
+3. Edit `.env` on the host with your Kite API key, API secret and current daily access token. Do not upload `.env` to GitHub or share credentials in chat.
+4. Start all services: `docker compose up -d --build`.
+5. Open `http://YOUR_SERVER_IP:8501` (restrict access with a firewall/reverse proxy and HTTPS before exposing it publicly).
+6. Check status: `docker compose ps`; follow logs: `docker compose logs -f dashboard index-worker stock-fno-worker`.
+7. Stop services: `docker compose down`. The named `arvi-data` volume remains; `docker compose down -v` deletes it and should not be used unless intentionally discarding the ledger.
+
+The dashboard and both workers use `/data/arvi_bot.db` from the same named volume. Workers require a current `KITE_ACCESS_TOKEN`; the token created inside the dashboard browser session is not automatically transferred to the worker containers. Renew the token through the approved Kite login flow and update the host's `.env`, then run `docker compose up -d`.
+
+**Safety default:** Compose explicitly sets `ARVI_LIVE_TRADING=NO`. The index worker is therefore candidate-only; the stock F&O worker is signal-only and never sends orders. This setup does not prove broker execution safety or guarantee uptime/profit. Do not change the live-trading flag as part of deployment; real-money execution needs separate controlled end-to-end validation and explicit approval.

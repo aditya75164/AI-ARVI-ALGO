@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_stock_universe
 from option_enrichment import enrich_fno_option_premiums
+from bot_ledger import init_db, sync_broker_history, dashboard_data
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
@@ -83,8 +84,54 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
+tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
 with tabs[0]:
+    st.subheader("Automated Trading Bot · Control Center")
+    st.caption("Broker-synchronised orders, tradebook, positions and performance. This panel reports real Kite records; it does not invent fills or P&L.")
+    init_db()
+    if not connected:
+        st.warning("Connect and verify Kite to synchronise broker records.")
+    else:
+        if st.button("Sync actual Kite orders & trades",type="primary",key="sync_broker_records"):
+            try:
+                result=sync_broker_history(kite)
+                st.session_state.broker_sync_result=result
+                st.success(f"Synced {result['orders']} orders and {result['trades']} trades from Kite.")
+            except Exception as exc:
+                st.error(f"Broker sync failed: {exc}")
+        try:
+            positions_data=kite.positions() or {}
+            day_positions=positions_data.get("day") or []
+            net_positions=positions_data.get("net") or []
+            day_pnl=sum(float(p.get("pnl") or 0) for p in day_positions)
+            net_pnl=sum(float(p.get("pnl") or 0) for p in net_positions)
+            orders=kite.orders() or []
+            trades=kite.trades() or []
+            open_positions=[p for p in net_positions if int(p.get("quantity") or 0)!=0]
+            a,b,c,d=st.columns(4)
+            a.metric("Today's broker P&L",f"₹{day_pnl:,.2f}")
+            b.metric("Net positions P&L",f"₹{net_pnl:,.2f}")
+            c.metric("Open positions",len(open_positions))
+            d.metric("Orders today",len(orders))
+            st.markdown("#### Open broker positions")
+            if open_positions:
+                st.dataframe(pd.DataFrame(open_positions),use_container_width=True,hide_index=True)
+            else:
+                st.info("No open broker positions reported by Kite.")
+            st.markdown("#### Actual broker orders")
+            if orders: st.dataframe(pd.DataFrame(orders).sort_values("order_timestamp",ascending=False),use_container_width=True,hide_index=True)
+            else: st.info("No broker orders returned.")
+            st.markdown("#### Actual broker tradebook")
+            if trades: st.dataframe(pd.DataFrame(trades).sort_values("fill_timestamp",ascending=False),use_container_width=True,hide_index=True)
+            else: st.info("No broker trades returned.")
+        except Exception as exc:
+            st.error(f"Unable to read Kite portfolio: {exc}")
+    ledger=dashboard_data()
+    if ledger["events"]:
+        st.markdown("#### Bot activity log")
+        st.dataframe(pd.DataFrame(ledger["events"]),use_container_width=True,hide_index=True)
+    st.warning("Live auto-entry/exit engine is not yet enabled. This screen currently synchronises and displays actual broker activity only. Do not treat the existing read-only scanners as running bots.")
+with tabs[1]:
     st.subheader("Daily market briefing")
     st.caption("NIFTY 50 and BANK NIFTY conditional scenarios, indicator-derived levels and market-moving headlines.")
     if not connected:
@@ -137,7 +184,7 @@ with tabs[0]:
         st.warning(f"News feed unavailable right now: {exc}")
     st.caption(f"Brief generated: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S IST')} · Refresh cache: 15 minutes. Scenarios are conditional levels, not predictions or guaranteed targets.")
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("F&O stock selection")
     st.caption("Scans F&O-eligible stock underlyings using daily historical candles, trend, momentum and relative volume.")
     max_fno=st.number_input("Maximum F&O stocks to analyse",10,100,35,5,key="max_fno")
@@ -171,7 +218,7 @@ with tabs[1]:
     elif stats: st.warning("No stocks passed the available historical-data checks or usable quote turnover was unavailable.")
     else: st.info("Click Scan F&O stocks to rank the F&O underlying stocks.")
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("NSE equity stock selection")
     st.caption("Scans NSE cash-equity stocks separately from the F&O universe using daily historical candles.")
     max_eq=st.number_input("Maximum equity stocks to analyse",10,100,35,5,key="max_eq")
@@ -195,7 +242,7 @@ with tabs[2]:
     elif stats: st.warning("No stocks passed the available historical-data checks.")
     else: st.info("Click Scan NSE equity stocks to rank cash-market stocks.")
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Second-by-second price & volume movement")
     x,y=st.columns([1,2])
     exchange=x.selectbox("Cash market",["NSE","BSE"])
@@ -228,7 +275,7 @@ with tabs[3]:
     else:
         st.warning("Connect and verify Kite to view live market quotes.")
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("NIFTY / BANKNIFTY trend & BUY/SELL indicator")
     u,v=st.columns(2)
     index=u.selectbox("Index",["NIFTY","BANKNIFTY"])
@@ -254,7 +301,7 @@ with tabs[4]:
         st.bar_chart(scan["data"].tail(120)[["Volume"]],height=180)
         st.dataframe(scan["data"].tail(30),use_container_width=True)
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("NSE/BSE stock F&O — one premium per stock")
     st.caption("One near-ATM contract per underlying, chosen by highest OI among nearby strikes in the nearest expiry.")
     ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
@@ -299,7 +346,7 @@ with tabs[5]:
     else:
         st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
     
-with tabs[6]:
+with tabs[7]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.
 - **BUY PE:** bearish six-EMA alignment, price below VWAP, RSI weakness and ATR activity.

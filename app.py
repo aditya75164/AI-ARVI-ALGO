@@ -31,13 +31,30 @@ with st.sidebar:
     st.write("API secret:", "Configured" if secret_ok else "Missing")
     if key_ok and secret_ok:
         st.link_button("1 · Login to Zerodha Kite",login_url())
-        token_input=st.text_input("2 · Request token from callback URL",type="password")
-        if st.button("Complete Kite login",use_container_width=True):
-            try:
-                st.session_state.kite_access_token=generate_session(token_input)
-                st.success("Login token received. Verify connection.")
-                st.rerun()
-            except Exception as exc: st.error(f"Login failed: {exc}")
+        callback_token = st.query_params.get("request_token", "")
+        if callback_token:
+            st.success("Kite callback detected. Complete login promptly; request tokens are single-use and short-lived.")
+            if st.button("2 · Complete login from callback URL", use_container_width=True):
+                try:
+                    st.session_state.kite_access_token = generate_session(callback_token)
+                    st.query_params.clear()
+                    st.success("Kite access token received. Now verify connection.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Login failed: {exc}. Start a fresh Kite login and use the newest callback URL.")
+        else:
+            st.info("After Kite login, you will return here. The app will read the request token from the callback URL.")
+            token_input = st.text_input("Fallback: paste request_token", type="password")
+            if st.button("Complete login with pasted token", use_container_width=True):
+                try:
+                    if not token_input.strip():
+                        st.error("Request token is empty.")
+                    else:
+                        st.session_state.kite_access_token = generate_session(token_input.strip())
+                        st.success("Kite access token received. Verify connection.")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Login failed: {exc}. Start a fresh Kite login; request tokens cannot be reused.")
     if st.button("Verify Kite connection",use_container_width=True):
         try:
             client=kite_client()

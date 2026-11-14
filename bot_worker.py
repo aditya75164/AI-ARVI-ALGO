@@ -260,11 +260,34 @@ def monitor_open_positions(kite):
     return outcomes
 
 
+def connect_with_retry(worker_name):
+    """Keep the worker alive and visible while Kite credentials/network recover."""
+    while not STOP:
+        try:
+            kite=create_kite()
+            update_worker_heartbeat(worker_name,"RUNNING","Kite session connected")
+            return kite
+        except Exception as exc:
+            message=str(exc)
+            auth_hint=any(word in message.lower() for word in ("token","auth","session","permission","api key"))
+            status="AUTH_REQUIRED" if auth_hint else "ERROR"
+            # Never log environment values or request headers.
+            update_worker_heartbeat(worker_name,status,"Kite connection unavailable: "+message[:240])
+            LOG.warning("%s connection unavailable (%s); retrying in 60 seconds",worker_name,status)
+            for _ in range(60):
+                if STOP: break
+                time.sleep(1)
+    return None
+
+
 def main():
     signal.signal(signal.SIGTERM,_stop); signal.signal(signal.SIGINT,_stop)
     cfg=load_config()
     init_db()
-    kite=create_kite()
+    kite=connect_with_retry("INDEX_OPTIONS")
+    if kite is None:
+        update_worker_heartbeat("INDEX_OPTIONS","STOPPED","Worker shutdown requested")
+        return
     recovery=reconcile_startup_state(kite)
     update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker connected; startup reconciliation complete",
         {"symbols":cfg["symbols"],"live_enabled":live_enabled(),

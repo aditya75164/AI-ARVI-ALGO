@@ -107,14 +107,20 @@ def run_scan_cycle(kite,cfg):
     if len(open_positions)>=int(cfg["max_open_positions"]):
         return [{"status":"BLOCKED","reason":"Maximum open positions reached"}]
     try:
-        broker_day=(kite.positions() or {}).get("day") or []
+        broker_positions=kite.positions() or {}
+        broker_day=broker_positions.get("day") or []
         day_pnl=sum(float(p.get("pnl") or 0) for p in broker_day)
-    except Exception:
-        day_pnl=0.0
+        broker_net=broker_positions.get("net") or []
+    except Exception as exc:
+        record_event("RISK_MANAGER","BROKER_RISK_READ","ERROR","Cannot read broker positions; new entries blocked",{"error":str(exc)})
+        return [{"status":"RISK_DATA_UNAVAILABLE"}]
     if day_pnl<=-abs(float(cfg["daily_loss_limit"])):
         record_event("RISK_MANAGER","DAILY_LOSS_LIMIT","BLOCKED",
                      "Daily loss limit reached; no new entries allowed",{"day_pnl":day_pnl})
         return [{"status":"DAILY_LOSS_LIMIT","day_pnl":day_pnl}]
+    active_broker=[p for p in broker_net if int(p.get("quantity") or 0)!=0 and str(p.get("exchange","")) in ("NFO","NSE")]
+    if len(active_broker)>=int(cfg["max_open_positions"]):
+        return [{"status":"BROKER_POSITION_LIMIT","open_positions":len(active_broker)}]
     for symbol in cfg["symbols"]:
         bot_name=f"{symbol}_5M"
         try:
@@ -199,6 +205,21 @@ def monitor_open_positions(kite):
             quote_age=quote_timestamp_age_seconds(quote_time) if quote_time else None
             if ltp<=0 or quote_age is None or quote_age>5: continue
             if ltp>=float(position["target_price"]):
+                # Reconcile any previously submitted target market order before retrying.
+                current=dashboard_data()
+                pending_exit=next((o for o in current["orders"] if o["bot_name"]==bot and
+                    o["transaction_type"]=="SELL" and o["order_type"]=="MARKET" and
+                    o["status"] in ("OPEN","PENDING","VALIDATION PENDING","AMO REQ RECEIVED")),None)
+                if pending_exit:
+                    latest_exit=reconcile_order(kite,pending_exit["order_id"],bot)
+                    if latest_exit.get("status")=="COMPLETE":
+                        close_position(position["position_key"])
+                        record_event(bot,"POSITION_CLOSED","TARGET_FILLED","Broker confirmed previously submitted target exit",
+                                     {"exit_order_id":pending_exit["order_id"]})
+                        outcomes.append({"symbol":symbol,"status":"TARGET_FILLED"})
+                    else:
+                        outcomes.append({"symbol":symbol,"status":"TARGET_EXIT_PENDING"})
+                    continue
                 # Cancel the protective stop and confirm cancellation before sending target exit.
                 if stop_id:
                     try: cancel_order(kite,stop_id)

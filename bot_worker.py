@@ -15,7 +15,7 @@ import pandas as pd
 from kiteconnect import KiteConnect
 from engine import add_dtc_style_indicators, build_signal
 from kite_adapter import select_option_contract, quote_timestamp_age_seconds
-from bot_ledger import init_db, record_event, dashboard_data, upsert_position, close_position
+from bot_ledger import init_db, record_event, dashboard_data, upsert_position, close_position, update_worker_heartbeat
 from order_executor import place_guarded_entry, place_protective_stop, reconcile_order, cancel_order, ExecutionBlocked, live_enabled
 
 IST=ZoneInfo("Asia/Kolkata")
@@ -256,6 +256,7 @@ def monitor_open_positions(kite):
 def main():
     signal.signal(signal.SIGTERM,_stop); signal.signal(signal.SIGINT,_stop)
     cfg=load_config(); kite=create_kite()
+    init_db(); update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker connected to Kite",{"symbols":cfg["symbols"],"live_enabled":live_enabled()})
     LOG.info("ARVI worker started; live execution=%s; symbols=%s",live_enabled(),cfg["symbols"])
     while not STOP:
         now=datetime.now(IST)
@@ -264,10 +265,13 @@ def main():
                 # Always manage already-open positions, even if the new-entry switch is OFF.
                 exits=monitor_open_positions(kite)
                 result=run_scan_cycle(kite,cfg)
+                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_enabled()})
                 LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
-            except Exception:
+            except Exception as exc:
+                update_worker_heartbeat("INDEX_OPTIONS","ERROR",str(exc))
                 LOG.exception("Worker cycle failed")
         time.sleep(max(10,int(cfg["poll_seconds"])))
+    update_worker_heartbeat("INDEX_OPTIONS","STOPPED","Worker received shutdown signal")
     LOG.info("ARVI worker stopped")
 
 

@@ -27,14 +27,10 @@ Index historical candles may have zero volume from the provider; relative volume
 This app is market-data and indicator only. It does not submit, modify, or cancel orders. BUY/SELL labels are rule-based technical signals and are not guaranteed predictions or investment advice.
 
 
-## Independent NSE data source
-The app includes a separate authorized NSE data-feed adapter in `nse_data_provider.py`. It does not scrape the NSE website. Configure the endpoint and bearer token supplied under your NSE Data subscription or authorized data vendor:
+## Historical data sources
+- **NSE official bhavcopy:** In the NSE Historical Data tab, upload the official CM-UDiFF bhavcopy CSV/ZIP downloaded from [NSE All Reports](https://www.nseindia.com/all-reports). The parser normalizes equity OHLC, volume, series and available UDiFF fields including expiry, strike, option type and OI. This is exchange-published end-of-day data, not live depth or intraday candles.
+- **Kite historical candles:** With a verified Kite account and historical-data entitlement, enter NSE symbols and a date range in the same tab to fetch daily OHLCV candles using Kite's historical API. The app labels this source as Kite, not direct NSE.
+- NSE's official EOD/historical data products are also available by subscription through NSE Data & Analytics. This app does not scrape NSE pages or invent a public API endpoint. See [NSE EOD/Historical Data](https://www.nse.in/static/market-data/eod-historical-data-subscription) and [NSE All Reports](https://www.nseindia.com/all-reports).
 
-```toml
-NSE_DATA_API_URL = "https://YOUR_AUTHORIZED_VENDOR_ENDPOINT/quotes"
-NSE_DATA_API_TOKEN = "YOUR_TOKEN"
-```
-
-The configured endpoint must accept a GET query parameter `symbols` (comma-separated) and return JSON as either a list or `{"data": [...]}`. Each row must contain `symbol` and `last_price`; optional fields are `open`, `high`, `low`, `previous_close`, `volume`, `oi`, `bid`, `ask`, `timestamp`, and `exchange`. This is a connector contract, not an NSE public API URL. Obtain the real endpoint and data-use rights from NSE Data or your authorized vendor. The UI keeps this source separate from Kite until a licensed feed is configured.
-
-NSE prohibits systematic/automated scraping of its public website. Official real-time, snapshot and historical products are subscription products. See [NSE Data & Analytics](https://www.nse.in/static/nse-data-and-analytics/data-information-vending) and [NSE Terms of Use](https://www.nseindia.com/static/nse-terms-of-use).
+## Historical data limitations
+Bhavcopy uploads contain only the dates and segments included in the file. The CM equity bhavcopy does not provide full intraday candles. Use an NSE F&O bhavcopy for option contract EOD fields. Kite historical candles require a verified account and the relevant historical-data entitlement.

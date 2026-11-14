@@ -525,6 +525,34 @@ with tabs[8]:
         aa,bb,cc,dd=st.columns(4)
         aa.metric("Trades",result["trade_count"]); bb.metric("Win rate",f"{result['win_rate_pct']:.1f}%")
         cc.metric("Wins / Losses",f"{result['wins']} / {result['losses']}"); dd.metric("Net points per unit",f"{result['net_points_per_unit']:.2f}")
-        if result["trades"]: st.dataframe(pd.DataFrame(result["trades"]),use_container_width=True,hide_index=True)
+        if result["trades"]:
+            display_trades = pd.DataFrame(result["trades"]).copy()
+            display_trades.insert(0, "Trade", range(1, len(display_trades) + 1))
+            def _display_trade_time(value):
+                parsed = pd.to_datetime(value, errors="coerce")
+                return parsed.strftime("%d-%b-%Y %H:%M") if pd.notna(parsed) else f"Candle {value}"
+            display_trades["entry_time"] = display_trades["entry_time"].map(_display_trade_time)
+            display_trades["exit_time"] = display_trades["exit_time"].map(_display_trade_time)
+            reason_labels = {
+                "TARGET": "Target Hit",
+                "STOP_OR_TRAIL": "Stop Loss / Trailing SL",
+                "EMA_EXIT": "Strategy Exit",
+                "END_OF_DATA": "Backtest End"
+            }
+            display_trades["reason"] = display_trades["reason"].map(
+                lambda value: reason_labels.get(value, str(value).replace("_", " ").title())
+            )
+            display_trades["return_pct"] = display_trades["return_pct"].map(lambda value: f"{value:+.2f}%")
+            display_trades["pnl_per_unit"] = display_trades["pnl_per_unit"].map(lambda value: f"₹{value:+.2f}")
+            display_trades = display_trades.rename(columns={
+                "entry_time": "BUY Time",
+                "exit_time": "SELL Time",
+                "entry": "BUY Price (₹)",
+                "exit": "SELL Price (₹)",
+                "return_pct": "Return (%)",
+                "pnl_per_unit": "P&L / Unit (₹)",
+                "reason": "Exit Reason"
+            })
+            st.dataframe(display_trades, use_container_width=True, hide_index=True)
         st.warning(result["note"])
     st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

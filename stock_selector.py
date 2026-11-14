@@ -7,6 +7,67 @@ from engine import add_dtc_style_indicators
 IST=ZoneInfo("Asia/Kolkata")
 
 
+def headline_score(company_name,symbol,headlines):
+    """Small transparent keyword match helper retained for legacy reports."""
+    tokens={str(company_name).lower(),str(symbol).lower()}
+    matches=[]
+    for headline in headlines or []:
+        text=str(headline)
+        low=text.lower()
+        if any(token and token in low for token in tokens):
+            matches.append(text)
+    if not matches:
+        return 0,"No matching headline found"
+    positive=("profit growth","record profit","strong results","upgrade","growth","surge","beats estimates","expansion")
+    negative=("loss","downgrade","fraud","default","misses estimates","decline","weak results")
+    score=0
+    for item in matches:
+        low=item.lower()
+        score+=sum(1 for word in positive if word in low)
+        score-=sum(1 for word in negative if word in low)
+    return score,matches[0]
+
+
+def score_stock(frame,company_name,symbol,headlines=None):
+    """Compatibility wrapper for legacy callers; delegates to daily candle scorer."""
+    if frame is None or len(frame)<65:
+        return None
+    data=frame.copy()
+    if isinstance(data.index,pd.DatetimeIndex):
+        data=data.reset_index().rename(columns={"index":"date"})
+    elif "date" not in data.columns:
+        data=data.reset_index().rename(columns={"index":"date"})
+    records=[]
+    for row in data.to_dict("records"):
+        records.append({str(k).lower():v for k,v in row.items()})
+    result=score_daily_candles(records,symbol,"EQUITY")
+    if result:
+        hs,_=headline_score(company_name,symbol,headlines or [])
+        result["Headline Score"]=hs
+    return result
+
+
+def quote_is_usable(quote,max_age_days=4):
+    """Legacy quote quality check for the watchlist tests."""
+    reasons=[]
+    ltp=float(quote.get("last_price") or 0)
+    volume=int(quote.get("volume") or 0)
+    if ltp<=0: reasons.append("invalid price")
+    if volume<=0: reasons.append("volume is zero")
+    depth=quote.get("depth") or {}
+    bid=float(((depth.get("buy") or [{}])[0]).get("price") or 0)
+    ask=float(((depth.get("sell") or [{}])[0]).get("price") or 0)
+    if bid<=0 or ask<=0 or ask<bid: reasons.append("bid-ask depth unavailable")
+    stamp=quote.get("timestamp") or quote.get("last_trade_time")
+    if not stamp:
+        reasons.append("quote timestamp unavailable")
+    else:
+        age=quote_timestamp_age_seconds(stamp)
+        if age is None or age>max_age_days*86400:
+            reasons.append(f"quote older than {max_age_days} days")
+    return not reasons,"; ".join(reasons)
+
+
 def _universe(kite, market):
     cash=pd.DataFrame(kite.instruments("NSE"))
     if cash.empty or not {"tradingsymbol","instrument_token","segment"}.issubset(cash.columns):

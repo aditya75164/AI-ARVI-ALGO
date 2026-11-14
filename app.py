@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
+from stock_selector import scan_fno_stock_candidates
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret
@@ -78,8 +79,36 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Live market monitor","Index signals","Stock F&O options watch","Indicator guide"])
+tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","Indicator guide"])
 with tabs[0]:
+    st.subheader("Top selected stock — trend + volume + global news")
+    st.caption("Shows only the highest-ranked eligible F&O stock. A 10% objective is a target reference, not a promised return.")
+    if st.button("Find strongest stock now",type="primary"):
+        try:
+            if not connected:
+                st.error("Connect and verify Kite first.")
+            else:
+                with st.spinner("Scanning liquid F&O stocks, volume, momentum and global headlines..."):
+                    st.session_state.stock_picks=scan_fno_stock_candidates(kite,max_stocks=25)
+        except Exception as exc:
+            st.error(f"Stock selection failed: {exc}")
+    picks=st.session_state.get("stock_picks",[])
+    if picks:
+        best=picks[0]
+        st.success(f"Selected stock: {best['name']} ({best['symbol']})")
+        a,b,c,d=st.columns(4)
+        a.metric("Selection score",f"{best['score']}/100")
+        b.metric("Last price",f"₹{best['last_price']:,.2f}")
+        c.metric("Relative volume",f"{best['relative_volume']}x")
+        d.metric("5-candle momentum",f"{best['momentum_pct']:+.2f}%")
+        st.write(f"**Trend:** Bullish · **RSI:** {best['rsi']} · **Day volume:** {best['day_volume']:,}")
+        st.write(f"**News context:** {best['headline']}")
+        st.caption("Filters: bullish six-EMA/VWAP alignment, relative volume ≥1.5x, positive short-term momentum and RSI 55–80. Global headlines are keyword-scored when they mention the stock; missing stock-specific news is neutral. No 10% return is guaranteed.")
+    elif "stock_picks" in st.session_state:
+        st.warning("No stock currently passes all filters. No pick is better than a weak pick.")
+    else:
+        st.info("Click Find strongest stock now after verifying Kite connection.")
+with tabs[1]:
     st.subheader("Second-by-second price & volume movement")
     x,y=st.columns([1,2])
     exchange=x.selectbox("Cash market",["NSE","BSE"])
@@ -112,7 +141,7 @@ with tabs[0]:
     else:
         st.warning("Connect and verify Kite to view live market quotes.")
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("NIFTY / BANKNIFTY trend & BUY/SELL indicator")
     u,v=st.columns(2)
     index=u.selectbox("Index",["NIFTY","BANKNIFTY"])
@@ -138,7 +167,7 @@ with tabs[1]:
         st.bar_chart(scan["data"].tail(120)[["Volume"]],height=180)
         st.dataframe(scan["data"].tail(30),use_container_width=True)
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("NSE/BSE stock F&O CE/PE watchlist")
     ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
     side=st.selectbox("Option side",["CE","PE"])
@@ -175,7 +204,7 @@ with tabs[2]:
     else:
         st.caption("Load the instrument master to list current unexpired eligible CE/PE contracts.")
 
-with tabs[3]:
+with tabs[4]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.
 - **BUY PE:** bearish six-EMA alignment, price below VWAP, RSI weakness and ATR activity.

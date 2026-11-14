@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_stock_universe
+from option_enrichment import enrich_fno_option_premiums
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
@@ -148,6 +149,8 @@ with tabs[1]:
                     frame,stats=scan_stock_universe(kite,"FNO",int(max_fno))
                 st.session_state.fno_selection=frame
                 st.session_state.fno_selection_stats=stats
+                with st.spinner("Selecting one trend-aligned option premium per stock using estimated theta and buyer-side depth..."):
+                    st.session_state.fno_option_premiums=enrich_fno_option_premiums(kite,frame,int(max_fno)) if not frame.empty else pd.DataFrame()
         except Exception as exc: st.error(f"F&O scan failed: {exc}")
     frame=st.session_state.get("fno_selection")
     stats=st.session_state.get("fno_selection_stats")
@@ -156,6 +159,14 @@ with tabs[1]:
         if stats.get('reason'): st.info(stats['reason'])
     if frame is not None and not frame.empty:
         st.dataframe(frame,use_container_width=True,hide_index=True)
+        premiums=st.session_state.get("fno_option_premiums")
+        st.markdown("#### Trend-aligned option premium — low theta & stronger buyers")
+        st.caption("BUY stock signal → CE; SELL stock signal → PE. One contract per stock, nearest expiry and near-ATM strikes. Estimated Black-Scholes theta/day is inferred from premium; buyer pressure = total displayed bid quantity ÷ ask quantity. Only buyer-dominant, liquid contracts are shown.")
+        if premiums is not None and not premiums.empty:
+            st.dataframe(premiums,use_container_width=True,hide_index=True)
+            st.download_button("Download F&O stock + option premium report",premiums.to_csv(index=False),"arvi_fno_option_premiums.csv","text/csv")
+        else:
+            st.warning("No option premium passed the live quote, liquidity, timestamp and buyer-dominance filters. No premium is fabricated.")
         st.download_button("Download F&O stock picks",frame.to_csv(index=False),"arvi_fno_stock_picks.csv","text/csv")
     elif stats: st.warning("No stocks passed the available historical-data checks or usable quote turnover was unavailable.")
     else: st.info("Click Scan F&O stocks to rank the F&O underlying stocks.")

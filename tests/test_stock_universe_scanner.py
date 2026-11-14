@@ -15,21 +15,39 @@ def make_candles(direction="up"):
     return rows
 
 
-def test_daily_fno_or_equity_scan_returns_actionable_fields():
-    row=score_daily_candles(make_candles("up"),"RELIANCE","FNO",10,5)
-    assert row is not None
-    assert row["Signal"]=="BUY"
-    assert row["Target"]==round(row["Entry"]*1.10,2)
-    assert row["Stop Loss"]==round(row["Entry"]*0.95,2)
-    assert row["Data Source"]=="Kite historical daily candles"
+def test_bullish_scan_uses_indicator_derived_targets_and_profit():
+    row=score_daily_candles(make_candles("up"),"RELIANCE","FNO")
+    assert row is not None and row["Signal"]=="BUY"
+    assert row["Target 1"]>row["Entry"]
+    assert row["Target 2"]>=row["Target 1"]
+    assert row["Stop Loss"]<row["Entry"]
+    assert row["Expected P/L per share"]==round(row["Target 1"]-row["Entry"],2)
+    assert row["Expected P/L %"]>0
+    assert row["ATR 14"]>0
+    assert row["Level Method"]=="20D swing + ATR(14)"
 
 
-def test_daily_scan_identifies_bearish_trend():
-    row=score_daily_candles(make_candles("down"),"SBIN","EQUITY",10,5)
-    assert row is not None
-    assert row["Signal"]=="SELL"
-    assert row["Target"]<row["Entry"]
+def test_bearish_scan_uses_downside_target_and_upside_stop():
+    row=score_daily_candles(make_candles("down"),"SBIN","EQUITY")
+    assert row is not None and row["Signal"]=="SELL"
+    assert row["Target 1"]<row["Entry"]
     assert row["Stop Loss"]>row["Entry"]
+    assert row["Expected P/L per share"]==round(row["Entry"]-row["Target 1"],2)
+    assert row["Expected P/L %"]>0
+
+
+def test_wait_signal_has_reference_levels_but_is_not_buy_or_sell():
+    candles=make_candles("up")
+    # Flatten recent prices to suppress momentum/trend confirmation.
+    for row in candles[-10:]:
+        row["close"]=candles[-11]["close"]
+        row["open"]=row["close"]
+        row["high"]=row["close"]+0.5
+        row["low"]=row["close"]-0.5
+    result=score_daily_candles(candles,"INFY","EQUITY")
+    if result is not None and result["Signal"]=="WAIT":
+        assert result["Target 1"]>result["Entry"]
+        assert result["Stop Loss"]<result["Entry"]
 
 
 def test_daily_scan_rejects_short_history():

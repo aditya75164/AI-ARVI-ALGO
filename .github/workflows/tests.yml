@@ -18,3 +18,7 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - run: python -m compileall -q app.py engine.py kite_adapter.py stock_selector.py market_briefing.py option_enrichment.py bot_ledger.py order_executor.py bot_worker.py stock_fno_worker.py tests
       - run: pytest -q
+      - name: Validate Docker Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

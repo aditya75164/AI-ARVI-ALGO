@@ -1,6 +1,11 @@
 # AI ARVI ALGO — F&O and Equity Stock Scanner
 
-Read-only Streamlit market scanner with separate F&O-underlying and NSE cash-equity stock selection.
+Streamlit trading intelligence application with separate F&O-underlying and NSE cash-equity stock selection, plus a broker-synchronised Bot Control Center.
+
+## Bot Control Center and broker records
+- The first dashboard tab synchronises actual Kite orders and tradebook and displays broker-reported day P&L, net-position P&L, open positions, orders and fills.
+- A SQLite ledger stores broker order snapshots, tradebook rows, bot events and equity snapshots. Set `ARVI_DB_PATH` to a persistent disk path in production; Streamlit Cloud's ephemeral filesystem is not suitable for durable performance history.
+- This release does **not** yet run unattended automated entry/exit strategies and does not place orders. The bot control centre is currently a broker reporting and ledger foundation, not an active trading bot.
 
 ## Daily market briefing
 - A dedicated first tab fetches NIFTY 50 and BANK NIFTY daily index candles from Kite.
@@ -39,4 +44,4 @@ streamlit run app.py
 ```
 
 ## Limitations and safety
-The app is read-only and does not place, modify or cancel broker orders. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. Intraday price may differ from the last completed daily candle. No result is guaranteed to be profitable.
+The app does not place, modify or cancel broker orders. Live automated execution, broker-side protective stop placement, target monitoring/reconciliation, unattended worker hosting and persistent production database deployment remain to be implemented and tested before it can be called a complete trading bot. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. Intraday price may differ from the last completed daily candle. No result is guaranteed to be profitable.

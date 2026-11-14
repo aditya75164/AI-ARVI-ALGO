@@ -16,6 +16,12 @@ Read-only Streamlit market scanner with separate F&O-underlying and NSE cash-equ
 - Signals use six EMAs (30/35/40/45/50/60), VWAP, RSI(14), relative volume and six-session momentum.
 - BUY requires bullish EMA alignment, close above VWAP, RSI >= 52 and positive momentum. SELL requires bearish EMA alignment, close below VWAP, RSI <= 48 and negative momentum. Otherwise WAIT.
 
+## F&O stock option premium line
+- Below the F&O underlying stock table, the app adds one trend-aligned option contract per selected stock: BUY signal maps to CE and SELL signal maps to PE.
+- It checks the nearest expiry and near-ATM strikes, then requires a recent quote, positive premium/volume/OI, two-sided bid/ask depth and a spread no wider than 5%.
+- It estimates implied volatility from the premium using Black-Scholes and displays estimated theta per calendar day. Selection prefers the least-negative theta among buyer-dominant contracts.
+- Buyer pressure is the displayed five-level bid quantity divided by ask quantity; it is a depth imbalance proxy, not proof of actual buyer-initiated trades. Theta is a model estimate, not an exchange-provided Greek. WAIT stocks do not receive a directional option pick.
+
 ## Indicator-derived price levels (no fixed 10%/5%)
 - ATR(14) is calculated from daily true range.
 - Support and resistance use the prior 20 completed daily candles, excluding the current candle.

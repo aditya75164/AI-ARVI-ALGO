@@ -34,3 +34,11 @@ def test_rejects_quote_older_than_three_minutes():
 def test_rejects_friday_quote_on_saturday():
     result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":18*60*60})
     assert not result["eligible"]
+
+def test_last_session_reference_quote_can_pass_relaxed_age_window():
+    result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":18*60*60},max_age_seconds=4*24*60*60)
+    assert result["eligible"]
+
+def test_same_quote_is_rejected_by_live_age_window():
+    result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":181},max_age_seconds=180)
+    assert not result["eligible"]

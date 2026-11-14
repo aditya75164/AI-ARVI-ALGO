@@ -258,7 +258,7 @@ with tabs[2]:
                                 candle_frame=pd.DataFrame(candles)
                                 if candle_frame.empty or "date" not in candle_frame.columns: continue
                                 result=backtest_ema_strategy(candle_frame,fast=9,slow=21,stop_pct=5.0,target_pct=10.0,trailing_pct=1.5)
-                                if int(result.get("trade_count",0))<3: continue
+                                if int(result.get("trade_count",0))<1: continue
                                 tested.append({
                                     "Stock":str(option["Stock"]),
                                     "Option":str(option["Option Side"]),
@@ -268,8 +268,8 @@ with tabs[2]:
                                     "Stock Score":float(directional.loc[directional["Stock"].eq(option["Stock"]),"Score"].iloc[0]),
                                     "RSI":float(directional.loc[directional["Stock"].eq(option["Stock"]),"RSI"].iloc[0]),
                                     "Relative Volume":float(directional.loc[directional["Stock"].eq(option["Stock"]),"Relative Volume"].iloc[0]),
-                                    "Buyer Pressure":float(option["Buyer Pressure"]),
-                                    "Theta / Day":float(option["Option Theta / Day"]),
+                                    "Buyer Pressure":float(option["Buyer Pressure"]) if pd.notna(option["Buyer Pressure"]) else None,
+                                    "Theta / Day":float(option["Option Theta / Day"]) if pd.notna(option["Option Theta / Day"]) else None,
                                     "Option OI":int(option["Option OI"]),
                                     "Option Volume":int(option["Option Volume"]),
                                     "Backtest Trades":int(result["trade_count"]),
@@ -305,11 +305,11 @@ with tabs[2]:
         results=st.session_state.get("auto_fno_backtest")
         st.markdown("#### Best historical option strategies")
         if results is not None and not results.empty:
-            st.success(f"{len(results)} unique stocks passed the minimum 3-trade option backtest. One best CE/PE contract per stock. Ranked by summed historical trade return, then net points, win rate and underlying score. Brokerage, taxes and slippage are not included.")
+            st.success(f"{len(results)} unique stocks completed at least one historical option trade. One best CE/PE contract per stock. Ranked by summed historical trade return, then net points, win rate and underlying score. Trade count is shown as the evidence size; brokerage, taxes and slippage are not included.")
             st.dataframe(results,use_container_width=True,hide_index=True)
             st.download_button("Download automatic F&O backtest ranking",results.to_csv(index=False),"arvi_automatic_fno_backtest.csv","text/csv")
         else:
-            st.warning("No option contract completed at least 3 valid historical trades. No 'best return' pick is shown when evidence is insufficient.")
+            st.warning("No shortlisted option produced even one valid historical trade. Check option contract history availability and the scan diagnostics above.")
     else:
         st.info("Press RUN AUTOMATIC NSE F&O SCAN + BACKTEST. ARVI scans all active NSE F&O underlyings, chooses one CE/PE contract per strongest unique stock and ranks the historical results. No manual stock selection is required.")
 
@@ -618,7 +618,7 @@ with tabs[8]:
                                 if auto_candles.empty or "date" not in auto_candles.columns: continue
                                 auto_candles["date"]=pd.to_datetime(auto_candles["date"],errors="coerce",utc=True).dt.tz_convert("Asia/Kolkata")
                                 auto_test=backtest_ema_strategy(auto_candles,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
-                                if int(auto_test.get("trade_count",0))<3: continue
+                                if int(auto_test.get("trade_count",0))<1: continue
                                 auto_row=auto_directional.loc[auto_directional["Stock"].eq(auto_option["Stock"])]
                                 if auto_row.empty: continue
                                 auto_signal=auto_row.iloc[0]
@@ -661,12 +661,12 @@ with tabs[8]:
             f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · "
             f"Active F&O universe: {auto_stats_saved.get('universe',0)} · "
             f"Daily histories checked: {auto_stats_saved.get('history_checked',0)} · "
-            f"Valid directional stocks: {auto_stats_saved.get('selected',0)} · "
+            f"Stocks with valid indicators: {auto_stats_saved.get('selected',0)} · BUY/SELL: {auto_stats_saved.get('directional',0)} · WAIT: {auto_stats_saved.get('wait',0)} · "
             "Detailed option tests: up to 30 unique stocks"
         )
     if auto_saved is not None:
         if not auto_saved.empty:
-            st.success(f"{len(auto_saved)} different stocks passed the minimum 3-trade test. Each stock appears once, with its own selected CE/PE contract and backtest result.")
+            st.success(f"{len(auto_saved)} different stocks completed at least one historical trade. Each stock appears once, with its own selected CE/PE contract and trade count shown as evidence size.")
             st.dataframe(auto_saved,use_container_width=True,hide_index=True)
             st.download_button(
                 "Download multi-stock NSE F&O ranking",
@@ -675,7 +675,7 @@ with tabs[8]:
                 "text/csv"
             )
         else:
-            st.warning("No unique stock passed the minimum 3-trade historical test. No best-return ranking is shown; check live Kite data, option liquidity and historical candle availability.")
+            st.warning("No unique stock produced a valid historical option trade. Review the scan counts and option contract history availability.")
     else:
         st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST. The old one-stock selector is no longer used in this section.")
     st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

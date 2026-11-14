@@ -114,6 +114,26 @@ def sync_broker_history(kite,bot_name="Manual/Kite",db_path=None):
     return {"orders":len(orders),"trades":len(trades)}
 
 
+def upsert_position(position,db_path=None):
+    now=datetime.now(IST).isoformat()
+    with connect(db_path) as c:
+        c.execute("""INSERT INTO bot_positions(position_key,bot_name,tradingsymbol,exchange,quantity,average_price,
+        stop_order_id,target_price,status,opened_at,updated_at,payload_json)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(position_key) DO UPDATE SET quantity=excluded.quantity,average_price=excluded.average_price,
+        stop_order_id=excluded.stop_order_id,target_price=excluded.target_price,status=excluded.status,
+        updated_at=excluded.updated_at,payload_json=excluded.payload_json""",
+        (str(position['position_key']),position['bot_name'],position['tradingsymbol'],position['exchange'],
+         int(position['quantity']),float(position['average_price']),str(position.get('stop_order_id') or ''),
+         float(position['target_price']),position.get('status','OPEN'),position.get('opened_at',now),now,
+         json.dumps(position,default=str)))
+
+
+def close_position(position_key,db_path=None):
+    with connect(db_path) as c:
+        c.execute("UPDATE bot_positions SET status='CLOSED',quantity=0,updated_at=? WHERE position_key=?",
+                  (datetime.now(IST).isoformat(),str(position_key)))
+
 def dashboard_data(db_path=None):
     with connect(db_path) as c:
         events=[dict(r) for r in c.execute("SELECT * FROM bot_events ORDER BY id DESC LIMIT 100")]

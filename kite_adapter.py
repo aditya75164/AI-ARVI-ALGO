@@ -27,7 +27,7 @@ def kite_client():
     return kite
 
 def login_url():
-    key=_secret("KITE_API_KEY")
+    key=get_secret("KITE_API_KEY")
     if not key: raise RuntimeError("KITE_API_KEY is not configured")
     return KiteConnect(api_key=key).login_url()
 

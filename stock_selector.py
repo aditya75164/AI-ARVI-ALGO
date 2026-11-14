@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 from engine import add_dtc_style_indicators
+from kite_adapter import quote_timestamp_age_seconds
 
 IST=ZoneInfo("Asia/Kolkata")
 

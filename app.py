@@ -9,7 +9,7 @@ from option_enrichment import enrich_fno_option_premiums
 from bot_ledger import init_db, sync_broker_history, dashboard_data
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
-    kite_client, login_url, generate_session, fetch_index_candles,
+    kite_client, login_url, generate_session, persist_access_token, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
 )
 
@@ -42,6 +42,7 @@ with st.sidebar:
             if st.button("2 · Complete login from callback URL", use_container_width=True):
                 try:
                     st.session_state.kite_access_token = generate_session(callback_token)
+                    persist_access_token(st.session_state.kite_access_token)
                     st.query_params.clear()
                     st.success("Kite access token received. Now verify connection.")
                     st.rerun()
@@ -56,6 +57,7 @@ with st.sidebar:
                         st.error("Request token is empty.")
                     else:
                         st.session_state.kite_access_token = generate_session(token_input.strip())
+                        persist_access_token(st.session_state.kite_access_token)
                         st.success("Kite access token received. Verify connection.")
                         st.rerun()
                 except Exception as exc:

@@ -25,3 +25,16 @@ Index historical candles may have zero volume from the provider; relative volume
 
 ## Safety
 This app is market-data and indicator only. It does not submit, modify, or cancel orders. BUY/SELL labels are rule-based technical signals and are not guaranteed predictions or investment advice.
+
+
+## Independent NSE data source
+The app includes a separate authorized NSE data-feed adapter in `nse_data_provider.py`. It does not scrape the NSE website. Configure the endpoint and bearer token supplied under your NSE Data subscription or authorized data vendor:
+
+```toml
+NSE_DATA_API_URL = "https://YOUR_AUTHORIZED_VENDOR_ENDPOINT/quotes"
+NSE_DATA_API_TOKEN = "YOUR_TOKEN"
+```
+
+The configured endpoint must accept a GET query parameter `symbols` (comma-separated) and return JSON as either a list or `{"data": [...]}`. Each row must contain `symbol` and `last_price`; optional fields are `open`, `high`, `low`, `previous_close`, `volume`, `oi`, `bid`, `ask`, `timestamp`, and `exchange`. This is a connector contract, not an NSE public API URL. Obtain the real endpoint and data-use rights from NSE Data or your authorized vendor. The UI keeps this source separate from Kite until a licensed feed is configured.
+
+NSE prohibits systematic/automated scraping of its public website. Official real-time, snapshot and historical products are subscription products. See [NSE Data & Analytics](https://www.nse.in/static/nse-data-and-analytics/data-information-vending) and [NSE Terms of Use](https://www.nseindia.com/static/nse-terms-of-use).

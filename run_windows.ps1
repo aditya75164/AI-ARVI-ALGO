@@ -7,6 +7,7 @@ $env:ARVI_DB_PATH = Join-Path $PSScriptRoot "arvi_local.db"
 $env:ARVI_LIVE_TRADING = "NO"
 $env:ARVI_LIVE_TRADING_APPROVED = "NO"
 $env:PYTHONUNBUFFERED = "1"
+$port = if ($env:ARVI_LOCAL_PORT) { [int]$env:ARVI_LOCAL_PORT } else { 8502 }
 
 $envFile = Join-Path $PSScriptRoot ".env"
 if (Test-Path $envFile) {
@@ -28,9 +29,9 @@ try {
     Write-Host "Starting local ARVI signal worker (SIGNAL_ONLY; live orders forced OFF)..." -ForegroundColor Cyan
     $worker = Start-Process -FilePath $python -ArgumentList "bot_worker.py" -WorkingDirectory $PSScriptRoot -RedirectStandardOutput (Join-Path $PSScriptRoot "worker.log") -RedirectStandardError (Join-Path $PSScriptRoot "worker-error.log") -PassThru
     Write-Host "Signal worker PID: $($worker.Id)" -ForegroundColor Green
-    Write-Host "Starting local dashboard. Open http://127.0.0.1:8501." -ForegroundColor Green
+    Write-Host "Starting local dashboard. Open http://127.0.0.1:$port." -ForegroundColor Green
     Write-Host "Keep this window open. Press Ctrl+C to stop dashboard and worker."
-    & $python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+    & $python -m streamlit run app.py --server.address 127.0.0.1 --server.port $port
 }
 finally {
     if ($worker -and -not $worker.HasExited) { Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue; Write-Host "ARVI signal worker stopped." -ForegroundColor Yellow }

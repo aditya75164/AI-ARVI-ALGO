@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_stock_universe
+from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
@@ -81,8 +82,61 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
+tabs=st.tabs(["Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
 with tabs[0]:
+    st.subheader("Daily market briefing")
+    st.caption("NIFTY 50 and BANK NIFTY conditional scenarios, indicator-derived levels and market-moving headlines.")
+    if not connected:
+        st.warning("Connect and verify Kite to fetch the latest index daily candles. Headlines can still be refreshed independently.")
+    top_left,top_right=st.columns([1,1])
+    refresh_news=top_right.button("Refresh news",key="refresh_market_news")
+    if refresh_news:
+        st.session_state.market_news_refresh=datetime.now(IST).isoformat()
+    @st.cache_data(ttl=900,show_spinner=False)
+    def _cached_index_brief(_kite,index):
+        candles=fetch_index_daily_candles(_kite,index,days=220)
+        return build_index_scenarios(candles,index)
+    @st.cache_data(ttl=900,show_spinner=False)
+    def _cached_news(_refresh_key):
+        return fetch_market_news()
+    if connected:
+        try:
+            with st.spinner("Fetching latest completed daily index candles..."):
+                nifty=_cached_index_brief(kite,"NIFTY")
+                bank=_cached_index_brief(kite,"BANKNIFTY")
+            st.caption(f"Index data: last completed daily candle · NIFTY {nifty['candle_date']} · BANK NIFTY {bank['candle_date']} · ATR(14) and prior 20-session swing levels")
+            for brief in (nifty,bank):
+                st.markdown(f"### {brief['index']}  ·  {brief['close']:,.2f}")
+                st.caption(f"Support {brief['support']:,.2f} · Resistance {brief['resistance']:,.2f} · ATR(14) {brief['atr']:,.2f}")
+                bull,bear=st.columns(2)
+                with bull:
+                    st.markdown("**:green[Bullish scenario ↑]**")
+                    st.metric("Trigger above",f"{brief['bullish']['trigger']:,.2f}")
+                    st.write(f"Targets: **{brief['bullish']['target1']:,.2f} → {brief['bullish']['target2']:,.2f}**")
+                    st.caption(f"Scenario invalidation below {brief['bullish']['invalidation']:,.2f}")
+                with bear:
+                    st.markdown("**:red[Bearish scenario ↓]**")
+                    st.metric("Trigger below",f"{brief['bearish']['trigger']:,.2f}")
+                    st.write(f"Targets: **{brief['bearish']['target1']:,.2f} → {brief['bearish']['target2']:,.2f}**")
+                    st.caption(f"Scenario invalidation above {brief['bearish']['invalidation']:,.2f}")
+                st.caption(f"Calculation: {brief['method']}")
+                st.divider()
+        except Exception as exc:
+            st.error(f"Index data unavailable: {exc}")
+    try:
+        news=_cached_news(st.session_state.get("market_news_refresh","daily"))
+        st.markdown("### Market news")
+        if news:
+            for item in news:
+                st.markdown(f"**[{item['title']}]({item['link']})**")
+                st.caption(f"{item['publisher']} · {item['published']}")
+        else:
+            st.info("No headlines returned by the news feed.")
+    except Exception as exc:
+        st.warning(f"News feed unavailable right now: {exc}")
+    st.caption(f"Brief generated: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S IST')} · Refresh cache: 15 minutes. Scenarios are conditional levels, not predictions or guaranteed targets.")
+
+with tabs[1]:
     st.subheader("F&O stock selection")
     st.caption("Scans F&O-eligible stock underlyings using daily historical candles, trend, momentum and relative volume.")
     max_fno=st.number_input("Maximum F&O stocks to analyse",10,100,35,5,key="max_fno")
@@ -106,7 +160,7 @@ with tabs[0]:
     elif stats: st.warning("No stocks passed the available historical-data checks or usable quote turnover was unavailable.")
     else: st.info("Click Scan F&O stocks to rank the F&O underlying stocks.")
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("NSE equity stock selection")
     st.caption("Scans NSE cash-equity stocks separately from the F&O universe using daily historical candles.")
     max_eq=st.number_input("Maximum equity stocks to analyse",10,100,35,5,key="max_eq")
@@ -130,7 +184,7 @@ with tabs[1]:
     elif stats: st.warning("No stocks passed the available historical-data checks.")
     else: st.info("Click Scan NSE equity stocks to rank cash-market stocks.")
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("Second-by-second price & volume movement")
     x,y=st.columns([1,2])
     exchange=x.selectbox("Cash market",["NSE","BSE"])
@@ -163,7 +217,7 @@ with tabs[2]:
     else:
         st.warning("Connect and verify Kite to view live market quotes.")
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("NIFTY / BANKNIFTY trend & BUY/SELL indicator")
     u,v=st.columns(2)
     index=u.selectbox("Index",["NIFTY","BANKNIFTY"])
@@ -189,7 +243,7 @@ with tabs[3]:
         st.bar_chart(scan["data"].tail(120)[["Volume"]],height=180)
         st.dataframe(scan["data"].tail(30),use_container_width=True)
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("NSE/BSE stock F&O — one premium per stock")
     st.caption("One near-ATM contract per underlying, chosen by highest OI among nearby strikes in the nearest expiry.")
     ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
@@ -234,7 +288,7 @@ with tabs[4]:
     else:
         st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
     
-with tabs[5]:
+with tabs[6]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.
 - **BUY PE:** bearish six-EMA alignment, price below VWAP, RSI weakness and ATR activity.

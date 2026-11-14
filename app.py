@@ -1,202 +1,172 @@
 import streamlit as st
+import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
-    select_option_contract, get_secret
+    fetch_derivative_contracts, get_quote_snapshot, get_secret
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
-IST = ZoneInfo("Asia/Kolkata")
+IST=ZoneInfo("Asia/Kolkata")
 for key, default in {
-    "last_scan": None,
-    "selected_contract": None,
-    "trading_mode": "Semi-Automatic",
-    "live_trading_armed": False,
+    "last_scan":None, "watch_history":{}, "selected_symbol":None,
+    "selected_derivative":None, "kite_profile":None
 }.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    if key not in st.session_state: st.session_state[key]=default
 
 st.markdown("""<style>
-.stApp{background:#f4f7fb;color:#14243a}.block-container{max-width:1440px;padding-top:1.2rem}
+.stApp{background:#f4f7fb;color:#14243a}.block-container{max-width:1500px;padding-top:1rem}
 [data-testid="stMetric"]{background:white;border:1px solid #dbe4ef;padding:12px;border-radius:12px}
 div.stButton>button{border-radius:9px;font-weight:600}
-</style>""", unsafe_allow_html=True)
+</style>""",unsafe_allow_html=True)
 st.title("🧭 AI ARVI ALGO")
-st.caption("Zerodha Kite · NIFTY / BANKNIFTY · Options scanner")
+st.caption("Market intelligence · Live price & volume monitor · BUY/SELL indicators · NSE/BSE F&O watch")
 
 with st.sidebar:
-    st.header("Risk controls")
-    capital = st.number_input("Trading capital (₹)", min_value=1000, value=50000, step=5000)
-    risk_pct = st.number_input("Risk budget per trade (%)", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
-    target_pct = st.number_input("Target (%)", min_value=0.5, max_value=20.0, value=3.0, step=0.5)
-    stop_pct = st.number_input("Stop-loss (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5)
-    max_trades = st.number_input("Maximum trades/day", min_value=1, max_value=10, value=3)
-    daily_loss = st.number_input("Daily loss limit (₹)", min_value=500, value=2000, step=500)
-    st.caption("These are displayed risk settings. Live order enforcement is not connected yet.")
-    st.divider()
-    st.subheader("Kite connection")
-    api_key_set = bool(get_secret("KITE_API_KEY"))
-    api_secret_set = bool(get_secret("KITE_API_SECRET"))
-    st.write("API key:", "Configured" if api_key_set else "Missing")
-    st.write("API secret:", "Configured" if api_secret_set else "Missing")
-    if api_key_set and api_secret_set:
-        try:
-            st.link_button("1 · Login to Zerodha Kite", login_url())
-        except Exception as exc:
-            st.error(f"Login URL error: {exc}")
-        request_token = st.text_input("2 · Paste request_token from callback URL", type="password")
-        if st.button("Complete Kite login", use_container_width=True):
+    st.subheader("Kite market-data connection")
+    key_ok=bool(get_secret("KITE_API_KEY")); secret_ok=bool(get_secret("KITE_API_SECRET"))
+    st.write("API key:", "Configured" if key_ok else "Missing")
+    st.write("API secret:", "Configured" if secret_ok else "Missing")
+    if key_ok and secret_ok:
+        st.link_button("1 · Login to Zerodha Kite",login_url())
+        token_input=st.text_input("2 · Request token from callback URL",type="password")
+        if st.button("Complete Kite login",use_container_width=True):
             try:
-                st.session_state["kite_access_token"] = generate_session(request_token)
-                st.success("Kite session token received. Verify connection.")
+                st.session_state.kite_access_token=generate_session(token_input)
+                st.success("Login token received. Verify connection.")
                 st.rerun()
-            except Exception as exc:
-                st.error(f"Kite login failed: {exc}")
+            except Exception as exc: st.error(f"Login failed: {exc}")
+    if st.button("Verify Kite connection",use_container_width=True):
+        try:
+            client=kite_client()
+            if client is None: st.error("Login first or configure KITE_ACCESS_TOKEN.")
+            else:
+                st.session_state.kite_profile=client.profile()
+                st.success(f"Connected: {st.session_state.kite_profile.get('user_name') or st.session_state.kite_profile.get('user_id')}")
+        except Exception as exc:
+            st.session_state.kite_profile=None
+            st.error(f"Connection failed: {exc}")
+    st.divider()
+    refresh=st.selectbox("Refresh interval",["1 second","2 seconds","5 seconds"],index=1)
+    st.caption("Live polling uses Kite quote API. API rate limits and your market-data entitlement apply.")
+
+kite=kite_client()
+connected=bool(st.session_state.kite_profile) and kite is not None
+c1,c2,c3=st.columns(3)
+c1.metric("Kite market data","Connected" if connected else "Not verified")
+c2.metric("Dashboard mode","Market monitor only")
+c3.metric("Order execution","Removed")
+st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
+
+tabs=st.tabs(["Live market monitor","Index signals","Stock F&O options watch","Indicator guide"])
+with tabs[0]:
+    st.subheader("Second-by-second price & volume movement")
+    x,y=st.columns([1,2])
+    exchange=x.selectbox("Cash market",["NSE","BSE"])
+    symbol=y.text_input("Equity trading symbol",value="RELIANCE",help="Enter exact NSE/BSE trading symbol, e.g. RELIANCE")
+    if connected:
+        @st.fragment(run_every={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh])
+        def live_ticker():
+            try:
+                q=get_quote_snapshot(kite,exchange,symbol.strip().upper())
+                if q["last_price"]<=0: st.warning("No valid traded price yet."); return
+                history=st.session_state.watch_history.setdefault(q["key"],[])
+                now=datetime.now(IST)
+                if not history or history[-1]["time"]!=now.strftime("%H:%M:%S"):
+                    history.append({"time":now.strftime("%H:%M:%S"),"price":q["last_price"],"volume":q["volume"]})
+                    st.session_state.watch_history[q["key"]]=history[-180:]
+                delta=(q["last_price"]/history[-2]["price"]-1)*100 if len(history)>1 and history[-2]["price"] else 0
+                vol_delta=q["volume"]-history[-2]["volume"] if len(history)>1 else 0
+                a,b,c,d=st.columns(4)
+                a.metric("Last price",f"₹{q['last_price']:,.2f}",f"{delta:+.2f}% since previous sample")
+                b.metric("Traded volume",f"{q['volume']:,}",f"{vol_delta:+,} since previous sample")
+                c.metric("Best bid",f"₹{q['bid']:,.2f}" if q["bid"] else "—")
+                d.metric("Best ask",f"₹{q['ask']:,.2f}" if q["ask"] else "—")
+                hist=pd.DataFrame(history)
+                if len(hist)>1:
+                    st.line_chart(hist.set_index("time")[["price"]],height=280)
+                    st.bar_chart(hist.set_index("time")[["volume"]],height=180)
+                st.caption(f"Quote timestamp: {q['timestamp'] or 'not supplied'} · Local sample: {now.strftime('%H:%M:%S IST')}. Polling is not an exchange tick feed.")
+            except Exception as exc: st.error(f"Quote fetch failed: {exc}")
+        live_ticker()
     else:
-        st.warning("Add KITE_API_KEY and KITE_API_SECRET to Streamlit deployment Secrets.")
-    if st.button("Verify Kite connection", use_container_width=True):
+        st.warning("Connect and verify Kite to view live market quotes.")
+
+with tabs[1]:
+    st.subheader("NIFTY / BANKNIFTY trend & BUY/SELL indicator")
+    u,v=st.columns(2)
+    index=u.selectbox("Index",["NIFTY","BANKNIFTY"])
+    interval=v.selectbox("Candle interval",["3minute","5minute","15minute"])
+    if st.button("Calculate index indicators",type="primary"):
         try:
-            client = kite_client()
-            if client is None:
-                st.error("No session. Complete Kite login or configure KITE_ACCESS_TOKEN.")
+            if not connected: st.error("Connect Kite first.")
             else:
-                profile = client.profile()
-                st.session_state["kite_profile"] = profile
-                st.success(f"Connected: {profile.get('user_name') or profile.get('user_id')}")
-        except Exception as exc:
-            st.session_state.pop("kite_profile", None)
-            st.error(f"Connection verification failed: {exc}")
-
-kite = kite_client()
-connected = bool(st.session_state.get("kite_profile")) and kite is not None
-
-st.subheader("Trading mode")
-semi_col, auto_col = st.columns(2)
-with semi_col:
-    st.markdown("### 🧑‍💻 Semi-Automatic")
-    st.caption("Signal and contract are shown to you. You decide whether to place each trade in your broker.")
-    if st.button("Choose Semi-Automatic", use_container_width=True,
-                 type="primary" if st.session_state.trading_mode == "Semi-Automatic" else "secondary"):
-        st.session_state.trading_mode = "Semi-Automatic"
-        st.rerun()
-with auto_col:
-    st.markdown("### ⚡ Fully Automatic")
-    st.caption("Intended for rule-based order execution after live safeguards and broker protection are implemented.")
-    if st.button("Choose Fully Automatic", use_container_width=True,
-                 type="primary" if st.session_state.trading_mode == "Fully Automatic" else "secondary"):
-        st.session_state.trading_mode = "Fully Automatic"
-        st.rerun()
-
-mode_col, conn_col, risk_col = st.columns(3)
-mode_col.metric("Selected mode", st.session_state.trading_mode)
-conn_col.metric("Kite API", "Verified" if connected else "Not verified")
-risk_col.metric("Risk budget / trade", f"₹{capital*risk_pct/100:,.0f}")
-
-st.subheader("Real-money trading master switch")
-st.toggle(
-    "I authorize live trading mode",
-    key="live_trading_armed",
-    help="This is an authorization preference only. It does not place orders in this build."
-)
-if st.session_state.live_trading_armed:
-    st.error("LIVE MODE SELECTED — but live order placement is not implemented or connected. No real order can be sent from this version. Do not treat this switch as active broker execution.")
-else:
-    st.info("Live trading is OFF. Scanner and contract lookup are read-only.")
-st.caption("Switching modes or turning this control ON/OFF never submits, modifies, or cancels a broker order.")
-
-scanner_tab, options_tab, guide_tab = st.tabs(
-    ["Market scanner", "Option contract lookup", "Strategy & execution status"]
-)
-
-with scanner_tab:
-    left, right = st.columns(2)
-    underlying = left.selectbox("Underlying index", ["NIFTY", "BANKNIFTY"], key="scan_underlying")
-    timeframe = right.selectbox("Signal timeframe", ["3minute", "5minute", "15minute"], key="scan_timeframe")
-    if st.button("Scan index", type="primary"):
-        try:
-            if kite is None:
-                st.error("Connect and verify Kite first.")
-            else:
-                candles = fetch_index_candles(kite, underlying, timeframe)
-                if candles.empty:
-                    st.error("Kite returned no candles. Check market hours and API access.")
-                else:
-                    analysed = add_dtc_style_indicators(candles)
-                    result = build_signal(analysed)
-                    st.session_state.last_scan = {
-                        "market": underlying, "timeframe": timeframe,
-                        "result": result, "data": analysed
-                    }
-        except Exception as exc:
-            st.error(f"Scan failed: {exc}")
-    scan = st.session_state.last_scan
+                candles=fetch_index_candles(kite,index,interval)
+                analysed=add_dtc_style_indicators(candles)
+                st.session_state.last_scan={"data":analysed,"result":build_signal(analysed),"index":index}
+        except Exception as exc: st.error(f"Indicator calculation failed: {exc}")
+    scan=st.session_state.last_scan
     if scan:
-        result = scan["result"]
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Market bias", result["bias"])
-        c2.metric("Signal", result["signal"])
-        c3.metric("Score", f'{result["score"]}/100')
-        c4.metric("Last candle", str(scan["data"].index[-1]))
-        st.write("**Reason:**", result["reason"])
-        st.dataframe(scan["data"].tail(30), use_container_width=True)
-        if result["signal"] in ("BUY CE", "BUY PE"):
-            st.success(f"Direction signal: {result['signal']}. Inspect the matching option contract in the next tab.")
-            st.session_state["suggested_side"] = "CE" if result["signal"] == "BUY CE" else "PE"
+        row=scan["data"].iloc[-1]; sig=scan["result"]
+        a,b,c,d=st.columns(4)
+        a.metric("Trend",row.get("TREND_LABEL","—"))
+        b.metric("Signal",sig["signal"])
+        c.metric("RSI 14",f"{row['RSI_14']:.1f}" if pd.notna(row["RSI_14"]) else "—")
+        d.metric("Relative volume",f"{row['RELATIVE_VOLUME']:.2f}x" if pd.notna(row["RELATIVE_VOLUME"]) else "—")
+        st.write("**Signal reason:**",sig["reason"])
+        st.line_chart(scan["data"].tail(120)[["Close","EMA_30","EMA_60","VWAP"]],height=360)
+        st.bar_chart(scan["data"].tail(120)[["Volume"]],height=180)
+        st.dataframe(scan["data"].tail(30),use_container_width=True)
 
-with options_tab:
-    st.subheader("Live NFO option contract lookup — read only")
-    c1, c2, c3 = st.columns(3)
-    opt_underlying = c1.selectbox("Underlying", ["NIFTY", "BANKNIFTY"], key="opt_underlying")
-    suggested = st.session_state.get("suggested_side", "CE")
-    opt_side = c2.selectbox("Option type", ["CE", "PE"], index=0 if suggested == "CE" else 1)
-    moneyness = c3.selectbox("Strike selection", ["ATM", "1 ITM", "2 ITM", "1 OTM", "2 OTM"])
-    if st.button("Fetch live option contract", type="primary"):
+with tabs[2]:
+    st.subheader("NSE/BSE stock F&O CE/PE watchlist")
+    ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
+    side=st.selectbox("Option side",["CE","PE"])
+    underlying=st.text_input("Underlying name (optional)",placeholder="e.g. RELIANCE, SBIN, INFY")
+    if st.button("Load eligible option contracts"):
         try:
-            if kite is None:
-                st.error("Connect and verify Kite first.")
+            if not connected: st.error("Connect Kite first.")
             else:
-                st.session_state.selected_contract = select_option_contract(
-                    kite, opt_underlying, opt_side, moneyness
-                )
-        except Exception as exc:
-            st.session_state.selected_contract = None
-            st.error(f"Option selection failed: {exc}")
-    contract = st.session_state.selected_contract
-    if contract:
-        a, b, c, d = st.columns(4)
-        a.metric("Spot", f'{contract["spot_ltp"]:,.2f}')
-        b.metric("Option premium", f'₹{contract["option_ltp"]:,.2f}')
-        c.metric("Strike / expiry", f'{contract["strike"]:g} · {contract["expiry"]}')
-        d.metric("Lot size", contract["lot_size"])
-        st.write(f'**Contract:** {contract["tradingsymbol"]} · {contract["side"]}')
-        e, f, g = st.columns(3)
-        e.metric("Bid", f'₹{contract["best_bid"]:,.2f}' if contract["best_bid"] else "Unavailable")
-        f.metric("Ask", f'₹{contract["best_ask"]:,.2f}' if contract["best_ask"] else "Unavailable")
-        g.metric("Spread", f'{contract["spread_pct"]:.2f}%' if contract["spread_pct"] is not None else "Unavailable")
-        if contract["spread_pct"] is not None and contract["spread_pct"] > 1.0:
-            st.warning("Bid/ask spread exceeds 1%. Liquidity/cost risk is elevated.")
-        if contract["volume"] == 0 or contract["oi"] == 0:
-            st.warning("Volume or open interest is zero. Liquidity is not confirmed.")
-        st.metric("Risk budget", f"₹{capital*risk_pct/100:,.0f}")
-        st.write(f"Indicative stop distance: {stop_pct:.2f}% · Indicative target: {target_pct:.2f}%")
-        st.info("Contract lookup only. No entry button, paper trade, or broker order placement is available.")
-        st.caption("Contract, expiry, lot size and quote are read from Kite. Nearest expiry and selected moneyness are used.")
+                contracts=fetch_derivative_contracts(kite,ex,underlying.strip() or None,side)
+                st.session_state.derivative_list=contracts
+        except Exception as exc: st.error(f"Instrument lookup failed: {exc}")
+    contracts=st.session_state.get("derivative_list")
+    if contracts is not None and not contracts.empty:
+        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","exchange"]]
+        st.dataframe(view,use_container_width=True)
+        chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
+        row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
+        if st.button("Monitor selected option"):
+            st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen}
+        sel=st.session_state.selected_derivative
+        if sel and sel["tradingsymbol"]==chosen:
+            @st.fragment(run_every={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh])
+            def option_monitor():
+                try:
+                    q=get_quote_snapshot(kite,ex,chosen)
+                    st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
+                    a,b,c=st.columns(3)
+                    a.metric("Volume",f"{q['volume']:,}")
+                    b.metric("Open interest",f"{q['oi']:,}")
+                    c.metric("Bid / Ask",f"{q['bid']:g} / {q['ask']:g}")
+                    st.caption(f"Quote time: {q['timestamp'] or 'not supplied'}")
+                except Exception as exc: st.error(f"Option quote failed: {exc}")
+            option_monitor()
+    else:
+        st.caption("Load the instrument master to list current unexpired eligible CE/PE contracts.")
 
-with guide_tab:
-    st.markdown("""**Signal framework (research approximation, not proprietary DTC code):**
-- Six EMA alignment: 30, 35, 40, 45, 50 and 60.
-- ATR activity filter, VWAP and RSI confirmation.
-- CE: bullish EMA stack, close above VWAP and RSI strength.
-- PE: bearish EMA stack, close below VWAP and RSI weakness.
-- Incomplete confirmation returns WAIT.
+with tabs[3]:
+    st.markdown("""### Indicator definitions
+- **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.
+- **BUY PE:** bearish six-EMA alignment, price below VWAP, RSI weakness and ATR activity.
+- **WAIT:** confirmations incomplete.
+- **Bullish/Bearish trend:** EMA stack aligned and price on the corresponding side of VWAP.
+- **Relative volume:** current candle volume divided by its 20-candle average.
+- **Volume change:** difference between cumulative exchange-reported volume samples.
+- **Price movement:** change between successive quote samples.
 
-**Execution status**
-- Paper entry and paper position monitor have been removed from the dashboard.
-- Semi-Automatic and Fully Automatic are selectable preferences.
-- Live trading master switch is a UI authorization preference only; it is not connected to Kite order placement.
-- Broker-side SL/Target, order lifecycle reconciliation, persistent state, kill switch and audit logging are not implemented. Do not enable real trading based on this UI switch.
-
-This tool does not guarantee profits. Validate all signals independently and understand options can lose the full premium.""")
-st.caption(f"Local time: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Order execution not connected")
+Signals are technical indicators, not guaranteed predictions or investment advice. The 1-second/2-second setting controls quote polling, not guaranteed exchange tick frequency. Streamlit Cloud sleep, Kite API limits, market-data entitlements and network latency can delay updates. For true tick-by-tick streaming, use KiteTicker/WebSocket on an always-on server.
+""")
+st.caption(f"{datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Read-only market monitor · No order execution")

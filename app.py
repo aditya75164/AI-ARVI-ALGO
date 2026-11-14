@@ -191,8 +191,17 @@ with tabs[3]:
         else:
             st.caption(f"Unique F&O underlyings: {stats['underlyings']} · Contracts checked: {stats['checked']} · Live eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
     if contracts is not None and not contracts.empty:
-        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
-        st.dataframe(view,use_container_width=True)
+        market_closed_reference=bool(stats and stats.get("reason")=="Market closed - reference universe only")
+        if market_closed_reference:
+            # Do not show every strike as if it were a ranked premium when OI is unavailable.
+            universe=(contracts.groupby("name",as_index=False)
+                      .agg(available_contracts=("tradingsymbol","count"))
+                      .sort_values("name"))
+            st.dataframe(universe.rename(columns={"name":"Underlying stock","available_contracts":"CE/PE contracts available"}),use_container_width=True)
+            st.caption("Closed-market view shows each underlying once. Highest-OI premium selection is available during market hours when current OI and depth can be verified.")
+        else:
+            view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
+            st.dataframe(view,use_container_width=True)
         chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
         row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
         if st.button("Monitor selected option"):

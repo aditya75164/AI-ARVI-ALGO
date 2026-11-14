@@ -50,6 +50,7 @@ with st.sidebar:
             st.error(f"Connection failed: {exc}")
     st.divider()
     refresh=st.selectbox("Refresh interval",["1 second","2 seconds","5 seconds"],index=1)
+    refresh_seconds={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh]
     st.caption("Live polling uses Kite quote API. API rate limits and your market-data entitlement apply.")
 
 kite=kite_client()
@@ -67,7 +68,7 @@ with tabs[0]:
     exchange=x.selectbox("Cash market",["NSE","BSE"])
     symbol=y.text_input("Equity trading symbol",value="RELIANCE",help="Enter exact NSE/BSE trading symbol, e.g. RELIANCE")
     if connected:
-        @st.fragment(run_every={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh])
+        @st.fragment(run_every=refresh_seconds)
         def live_ticker():
             try:
                 q=get_quote_snapshot(kite,exchange,symbol.strip().upper())

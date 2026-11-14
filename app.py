@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
+from nse_data_provider import nse_feed_configured, fetch_nse_quotes
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
@@ -70,6 +71,10 @@ with st.sidebar:
     refresh=st.selectbox("Refresh interval",["1 second","2 seconds","5 seconds"],index=1)
     refresh_seconds={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh]
     st.caption("Live polling uses Kite quote API. API rate limits and your market-data entitlement apply.")
+    st.divider()
+    st.subheader("NSE licensed data feed")
+    st.write("Configured" if nse_feed_configured() else "Not configured")
+    st.caption("Requires NSE subscription or authorized vendor API credentials; no website scraping.")
 
 kite=kite_client()
 connected=bool(st.session_state.kite_profile) and kite is not None
@@ -79,7 +84,7 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","Indicator guide"])
+tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","NSE data feed","Indicator guide"])
 with tabs[0]:
     st.subheader("Top selected stock — trend + volume + global news")
     st.caption("Shows only the highest-ranked eligible F&O stock. A 10% objective is a target reference, not a promised return.")
@@ -212,6 +217,26 @@ with tabs[3]:
     else:
         st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
     
+with tabs[4]:
+    st.subheader("NSE licensed market data")
+    st.caption("Independent source connector. Configure an authorized NSE Data subscription or vendor's documented JSON API.")
+    symbols=st.text_input("NSE symbols (comma separated)",value="RELIANCE,SBIN,INFY")
+    if st.button("Fetch NSE data",type="primary"):
+        try:
+            rows=fetch_nse_quotes([s.strip() for s in symbols.split(",") if s.strip()])
+            st.session_state.nse_quotes=rows
+        except Exception as exc:
+            st.error(str(exc))
+    nse_rows=st.session_state.get("nse_quotes")
+    if nse_rows is not None:
+        if nse_rows.empty:
+            st.warning("No NSE rows returned for the requested symbols.")
+        else:
+            st.dataframe(nse_rows,use_container_width=True,hide_index=True)
+            st.caption("Source: configured licensed NSE/vendor endpoint. Verify subscription permissions and quote timestamps before using signals.")
+    else:
+        st.info("Add NSE_DATA_API_URL and NSE_DATA_API_TOKEN in Streamlit Cloud Secrets. See README for the expected normalized response fields.")
+
 with tabs[4]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.

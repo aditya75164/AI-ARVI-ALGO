@@ -45,3 +45,26 @@ streamlit run app.py
 
 ## Limitations and safety
 The app does not place, modify or cancel broker orders. Live automated execution, broker-side protective stop placement, target monitoring/reconciliation, unattended worker hosting and persistent production database deployment remain to be implemented and tested before it can be called a complete trading bot. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. Intraday price may differ from the last completed daily candle. No result is guaranteed to be profitable.
+
+## Always-on NIFTY / BANK NIFTY worker
+A separate background process is provided in `bot_worker.py`; do not run the trading loop inside Streamlit.
+
+### Configure and start in a dedicated worker host
+1. Copy `bot_config.example.json` to `bot_config.json` and adjust risk limits after reviewing them.
+2. Set worker environment variables: `KITE_API_KEY`, `KITE_ACCESS_TOKEN`, `ARVI_BOT_CONFIG=bot_config.json`, and `ARVI_DB_PATH=/data/arvi_bot.db` on a persistent volume.
+3. Build/run with `docker build -f Dockerfile.worker -t arvi-worker .` and `docker run --restart unless-stopped --env-file worker.env -v arvi-data:/data arvi-worker`.
+4. Keep `ARVI_LIVE_TRADING` unset initially. The worker then logs trade candidates only and does not send orders.
+5. Only after independent paper/sandbox validation, broker order lifecycle tests, persistent storage, monitoring and explicit operator approval should a deployment administrator set `ARVI_LIVE_TRADING=YES`.
+
+### Worker strategy and safeguards
+- Scans NIFTY and BANK NIFTY using the existing 5-minute six-EMA/VWAP/RSI/ATR signal engine.
+- BUY CE / BUY PE candidate uses nearest-expiry ATM option, recent two-sided quote, volume/OI, spread gate and 5-minute option ATR for stop/target references.
+- Risk-based whole-lot sizing, max lots, maximum open positions, daily broker P&L loss gate, trading time window and duplicate-position/order checks.
+- When live mode is explicitly enabled, it submits LIMIT entry orders, verifies broker fills, protects filled quantity with a broker-side SL, and monitors target exits in the always-on worker. Partial fills are handled by cancelling remainder and protecting filled quantity.
+- Worker must stay running and retain API access for target monitoring. Broker-side SL remains with the exchange/broker, but target exits are worker-managed; outages can delay target exits.
+- Initial worker is for NIFTY/BANKNIFTY index options only. Stock F&O and cash-equity auto-bots are not yet wired into the worker.
+
+### Critical deployment notes
+- This repository commit does not deploy or start a background service. A separate always-on host, environment secrets, persistent disk/database, logs and alerting must be configured.
+- Never put API secrets in GitHub files or chat. Kite access tokens expire and require renewal.
+- Live execution is OFF by default. Do not enable live mode until the broker account, lot sizes, margins, order types, SL behavior, partial fills, rejected orders, network recovery and daily risk limits are tested in a controlled environment.

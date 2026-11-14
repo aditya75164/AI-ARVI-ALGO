@@ -227,7 +227,11 @@ def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_second
     if not market_open:
         # Do not call quote() on a closed exchange and mislabel absent depth as a dead stock.
         # Historical candle data is shown separately for an individually selected contract.
-        return pd.DataFrame(), {
+        reference=contracts.copy()
+        for col in ('last_price','volume','oi','bid','ask','spread_pct'):
+            reference[col]=None
+        reference['quote_status']='SELECT TO LOAD LAST-SESSION CANDLE'
+        return reference, {
             'checked':0,'eligible':0,'rejected':0,'underlyings':unique_underlyings,
             'total_contracts':total_contracts,'reason':'Market closed - reference universe only'
         }

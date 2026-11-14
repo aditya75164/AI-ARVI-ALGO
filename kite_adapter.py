@@ -135,3 +135,43 @@ def get_option_ltp(kite, tradingsymbol: str) -> float:
     if value <= 0:
         raise RuntimeError(f"Invalid LTP for {tradingsymbol}")
     return value
+
+
+def fetch_derivative_contracts(kite, exchange="NFO", underlying=None, option_side="CE"):
+    """Return current unexpired stock/index option contracts from Kite's instrument master."""
+    if exchange not in ("NFO", "BFO") or option_side not in ("CE", "PE"):
+        raise ValueError("Only NFO/BFO CE/PE contracts are supported")
+    instruments = pd.DataFrame(kite.instruments(exchange))
+    required = {"name","instrument_type","expiry","strike","lot_size","tradingsymbol","instrument_token","exchange"}
+    if instruments.empty or not required.issubset(instruments.columns):
+        raise RuntimeError(f"{exchange} instrument master is empty or incomplete")
+    today = datetime.now(IST).date()
+    frame = instruments[
+        instruments["instrument_type"].astype(str).str.upper().eq(option_side)
+    ].copy()
+    frame["expiry"] = pd.to_datetime(frame["expiry"], errors="coerce").dt.date
+    frame = frame[frame["expiry"] >= today]
+    if underlying:
+        frame = frame[frame["name"].astype(str).str.upper().eq(underlying.upper())]
+    return frame.sort_values(["name","expiry","strike"]).reset_index(drop=True)
+
+
+def get_quote_snapshot(kite, exchange, tradingsymbol):
+    if exchange not in ("NSE","BSE","NFO","BFO"):
+        raise ValueError("Unsupported exchange")
+    key=f"{exchange}:{tradingsymbol}"
+    data=kite.quote([key]).get(key)
+    if not data:
+        raise RuntimeError(f"No quote returned for {key}")
+    depth=data.get("depth") or {}
+    bid=(depth.get("buy") or [{}])[0].get("price") or 0
+    ask=(depth.get("sell") or [{}])[0].get("price") or 0
+    return {
+        "key":key,
+        "last_price":float(data.get("last_price") or 0),
+        "volume":int(data.get("volume") or 0),
+        "oi":int(data.get("oi") or 0),
+        "bid":float(bid),
+        "ask":float(ask),
+        "timestamp":str(data.get("timestamp") or data.get("last_trade_time") or ""),
+    }

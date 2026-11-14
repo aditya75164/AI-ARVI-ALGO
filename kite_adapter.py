@@ -182,7 +182,7 @@ def fetch_derivative_contracts(kite, exchange="NFO", underlying=None, option_sid
     if exchange not in ("NFO", "BFO") or option_side not in ("CE", "PE"):
         raise ValueError("Only NFO/BFO CE/PE contracts are supported")
     instruments = pd.DataFrame(kite.instruments(exchange))
-    required = {"name","instrument_type","expiry","strike","lot_size","tradingsymbol","instrument_token","exchange"}
+    required = {"name","instrument_type","expiry","strike","lot_size","tradingsymbol","instrument_token"}
     if instruments.empty or not required.issubset(instruments.columns):
         raise RuntimeError(f"{exchange} instrument master is empty or incomplete")
     today = datetime.now(IST).date()

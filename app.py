@@ -413,6 +413,16 @@ with tabs[8]:
     if kite is None:
         st.warning("Kite access token is not available in this dashboard process. Complete Kite login and Verify Kite connection first.")
     else:
+        if "paper_fno_underlyings" not in st.session_state:
+            _master = pd.DataFrame(kite.instruments("NFO"))
+            if _master.empty or not {"name","instrument_type","expiry"}.issubset(_master.columns):
+                st.session_state.paper_fno_underlyings = ["NIFTY", "BANKNIFTY"]
+            else:
+                _master = _master[_master["instrument_type"].astype(str).str.upper().isin(["CE","PE"])].copy()
+                _master["expiry"] = pd.to_datetime(_master["expiry"], errors="coerce").dt.date
+                _master = _master[_master["expiry"] >= datetime.now(IST).date()]
+                st.session_state.paper_fno_underlyings = sorted(_master["name"].dropna().astype(str).unique().tolist())
+        paper_universe = st.session_state.paper_fno_underlyings or ["NIFTY", "BANKNIFTY"]
         st.markdown("#### Live market-data verification")
         if st.button("Verify live Kite market data",key="paper_verify_market"):
             try:
@@ -422,8 +432,9 @@ with tabs[8]:
                 st.success(f"Authenticated as {profile.get('user_name') or profile.get('user_id')} · NIFTY LTP ₹{spot:,.2f}")
             except Exception as exc: st.error(f"Live market-data verification failed: {exc}")
         st.markdown("#### Open a virtual option BUY")
+        st.caption("Universe: all currently unexpired NSE NFO option underlyings available in your Kite instrument master. Choose any stock/index and CE or PE.")
         x,y,z=st.columns(3)
-        paper_underlying=x.selectbox("Underlying",["NIFTY","BANKNIFTY"],key="paper_underlying")
+        paper_underlying=x.selectbox("NSE F&O stock / index",paper_universe,key="paper_underlying")
         paper_side=y.selectbox("Option side",["CE","PE"],key="paper_side")
         paper_moneyness=z.selectbox("Strike selection",["ATM","1 ITM","1 OTM"],key="paper_moneyness")
         p1,p2,p3=st.columns(3)
@@ -451,7 +462,7 @@ with tabs[8]:
         candidate=st.session_state.get("paper_candidate")
         if candidate:
             contract=candidate["contract"]
-            st.dataframe(pd.DataFrame([{"Contract":contract["tradingsymbol"],"Expiry":contract["expiry"],"Strike":contract["strike"],"LTP":contract["option_ltp"],"Lot size":contract["lot_size"],"Buyer depth":contract.get("buyer_depth_qty"),"Seller depth":contract.get("seller_depth_qty"),"Quote age (sec)":round(candidate["age"],1),"Risk-sized quantity":candidate["quantity"]}]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{"Stock / Index":contract["underlying"],"Option":contract["side"],"Contract":contract["tradingsymbol"],"Expiry":contract["expiry"],"Strike":contract["strike"],"Premium (₹)":contract["option_ltp"],"Lot size":contract["lot_size"],"Buyer depth":contract.get("buyer_depth_qty"),"Seller depth":contract.get("seller_depth_qty"),"Quote age (sec)":round(candidate["age"],1),"Risk-sized quantity":candidate["quantity"]}]),use_container_width=True,hide_index=True)
             allowed,reason=can_open_trade(load_paper_trades(),3,1500)
             if not allowed: st.warning(reason)
             if candidate["quantity"]<=0: st.warning("Risk budget is too small for one complete lot.")
@@ -503,10 +514,21 @@ with tabs[8]:
         st.markdown("#### Paper trade history")
         st.dataframe(pd.DataFrame(paper_trades),use_container_width=True,hide_index=True)
         st.download_button("Download paper trade history CSV",pd.DataFrame(paper_trades).to_csv(index=False),"arvi_paper_trade_history.csv","text/csv")
+    st.markdown("#### Strategy & stock-selection logic")
+    with st.expander("Which indicators and strategy does AI ARVI use?"):
+        st.markdown("""
+        **Paper BUY contract selection:** this is a user-selected contract lookup, not an AI BUY signal. The app selects the nearest unexpired expiry and ATM / ITM / OTM strike from the NSE NFO instrument master, then checks the live quote timestamp. It does not rank or recommend a stock at this step.
+
+        **F&O Stock Selection watchlist:** scans near-ATM CE/PE contracts for F&O stocks. It uses premium percentage change versus the previous close: BUY at +0.5% or more, SELL at -0.5% or less, otherwise WAIT. It selects the nearest expiry and ranks the selected contracts by open interest (OI) and traded volume. This is a simple momentum/reference filter, not EMA/RSI/ADX confirmation.
+
+        **Historical Paper Backtest:** uses EMA 9 / EMA 21 bullish crossover on the selected option's 5-minute premium candles. Entry is simulated at the next candle open; stop-loss, target and trailing-stop rules manage exits. This is a separate strategy from the stock watchlist.
+        
+        **Important:** signals are research filters, not guaranteed recommendations. Verify liquidity, spread, underlying trend and risk before any paper trade.
+        """)
     st.markdown("#### Historical paper backtest")
     st.caption("EMA 9/21 crossover on historical option candles. Entries use next candle open; conservative stop/target/trailing rules; fees, taxes, spread and slippage excluded.")
     b1,b2,b3=st.columns(3)
-    bt_underlying=b1.selectbox("Backtest underlying",["NIFTY","BANKNIFTY"],key="bt_underlying")
+    bt_underlying=b1.selectbox("Backtest NSE F&O stock / index",paper_universe,key="bt_underlying")
     bt_side=b2.selectbox("Backtest option",["CE","PE"],key="bt_side")
     bt_moneyness=b3.selectbox("Backtest strike",["ATM","1 ITM","1 OTM"],key="bt_moneyness")
     if st.button("Run historical paper backtest",key="paper_backtest"):

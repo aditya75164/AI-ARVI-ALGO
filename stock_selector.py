@@ -106,12 +106,16 @@ def scan_stock_universe(kite, market="FNO", max_candidates=35, target_pct=10.0, 
         raise ValueError("market must be FNO or EQUITY")
     universe=_universe(kite,market)
     turnover=_quote_turnover(kite,universe)
-    # When quote volume is absent (e.g. exchange closed), use the full instrument
-    # universe but cap historical calls deterministically.
-    if turnover:
-        candidates=turnover[:max_candidates]
-    else:
-        candidates=[(s,t,0,0,0) for s,t in universe[:max_candidates]]
+    # Never substitute an arbitrary alphabetical slice when quote turnover is absent.
+    # That would present random instruments as selected stocks.
+    if not turnover:
+        return pd.DataFrame(),{
+            "universe":len(universe),"quote_ranked":0,
+            "history_checked":0,"selected":0,
+            "data_source":"Kite historical daily candles",
+            "reason":"No quote turnover available; scan withheld to avoid arbitrary picks"
+        }
+    candidates=turnover[:max_candidates]
     now=datetime.now(IST)
     start=now-timedelta(days=180)
     picks=[]

@@ -1,25 +1,22 @@
 import streamlit as st
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
-    select_option_contract, get_option_ltp, get_secret
-)
-from paper_trading import (
-    quantity_for_risk, open_paper_trade, mark_paper_trade,
-    close_paper_trade, can_open_trade, daily_realized_pnl
+    select_option_contract, get_secret
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
 IST = ZoneInfo("Asia/Kolkata")
-if "paper_trades" not in st.session_state:
-    st.session_state.paper_trades = []
-if "last_scan" not in st.session_state:
-    st.session_state.last_scan = None
-if "selected_contract" not in st.session_state:
-    st.session_state.selected_contract = None
+for key, default in {
+    "last_scan": None,
+    "selected_contract": None,
+    "trading_mode": "Semi-Automatic",
+    "live_trading_armed": False,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 st.markdown("""<style>
 .stApp{background:#f4f7fb;color:#14243a}.block-container{max-width:1440px;padding-top:1.2rem}
@@ -27,47 +24,17 @@ st.markdown("""<style>
 div.stButton>button{border-radius:9px;font-weight:600}
 </style>""", unsafe_allow_html=True)
 st.title("🧭 AI ARVI ALGO")
-st.caption("Zerodha Kite · NIFTY / BANKNIFTY · Options scanner · Paper execution & risk monitor")
-
-# User-selectable execution preference. Selection alone never submits an order.
-if "trading_mode" not in st.session_state:
-    st.session_state.trading_mode = "Semi-Automatic"
-if "live_trading_armed" not in st.session_state:
-    st.session_state.live_trading_armed = False
-
-st.subheader("Execution preference")
-semi_col, auto_col = st.columns(2)
-with semi_col:
-    st.markdown("### 🧑‍💻 Semi-Automatic")
-    st.caption("AI generates the signal; you review and confirm each entry.")
-    if st.button("Select Semi-Automatic", use_container_width=True,
-                 type="primary" if st.session_state.trading_mode == "Semi-Automatic" else "secondary"):
-        st.session_state.trading_mode = "Semi-Automatic"
-        st.rerun()
-with auto_col:
-    st.markdown("### ⚡ Fully Automatic")
-    st.caption("Designed for rule-based execution after all live safeguards are available.")
-    if st.button("Select Fully Automatic", use_container_width=True,
-                 type="primary" if st.session_state.trading_mode == "Fully Automatic" else "secondary"):
-        st.session_state.trading_mode = "Fully Automatic"
-        st.rerun()
-
-selected_col, safety_col = st.columns(2)
-selected_col.info(f"Selected preference: **{st.session_state.trading_mode}**")
-safety_col.warning("Live execution is not connected in this build. Both preferences currently run PAPER trades only.")
-st.toggle("Live trading master switch", key="live_trading_armed", disabled=True,
-          help="Unavailable until live order execution, broker-side protection and reconciliation are implemented and verified.")
+st.caption("Zerodha Kite · NIFTY / BANKNIFTY · Options scanner")
 
 with st.sidebar:
-    st.header("Risk & execution")
+    st.header("Risk controls")
     capital = st.number_input("Trading capital (₹)", min_value=1000, value=50000, step=5000)
-    risk_pct = st.number_input("Risk per trade (%)", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
-    target = st.number_input("Target (%)", min_value=0.5, max_value=20.0, value=3.0, step=0.5)
-    stop = st.number_input("Stop-loss (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5)
-    trail_on = st.toggle("Trailing stop-loss", value=True)
-    trail_pct = st.number_input("Trailing SL (%)", min_value=0.25, max_value=10.0, value=1.0, step=0.25, disabled=not trail_on)
+    risk_pct = st.number_input("Risk budget per trade (%)", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
+    target_pct = st.number_input("Target (%)", min_value=0.5, max_value=20.0, value=3.0, step=0.5)
+    stop_pct = st.number_input("Stop-loss (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5)
     max_trades = st.number_input("Maximum trades/day", min_value=1, max_value=10, value=3)
     daily_loss = st.number_input("Daily loss limit (₹)", min_value=500, value=2000, step=500)
+    st.caption("These are displayed risk settings. Live order enforcement is not connected yet.")
     st.divider()
     st.subheader("Kite connection")
     api_key_set = bool(get_secret("KITE_API_KEY"))
@@ -82,9 +49,8 @@ with st.sidebar:
         request_token = st.text_input("2 · Paste request_token from callback URL", type="password")
         if st.button("Complete Kite login", use_container_width=True):
             try:
-                token = generate_session(request_token)
-                st.session_state["kite_access_token"] = token
-                st.success("Kite session token received. Press Verify connection.")
+                st.session_state["kite_access_token"] = generate_session(request_token)
+                st.success("Kite session token received. Verify connection.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Kite login failed: {exc}")
@@ -105,23 +71,49 @@ with st.sidebar:
 
 kite = kite_client()
 connected = bool(st.session_state.get("kite_profile")) and kite is not None
-mode_col, conn_col, risk_col, pnl_col = st.columns(4)
-mode_col.metric("Execution mode", "PAPER ONLY")
-conn_col.metric("Kite API", "Verified" if connected else "Not verified")
-risk_col.metric("Risk / trade", f"₹{capital*risk_pct/100:,.0f}")
-pnl_col.metric("Today's realized P&L", f"₹{daily_realized_pnl(st.session_state.paper_trades):,.2f}")
-st.warning("Live order placement is deliberately disabled. All entries and exits below are simulated paper trades; no broker order is sent.")
 
-scanner_tab, options_tab, positions_tab, guide_tab = st.tabs(
-    ["Market scanner", "Option chain & paper entry", "Positions & risk", "Strategy guide"]
+st.subheader("Trading mode")
+semi_col, auto_col = st.columns(2)
+with semi_col:
+    st.markdown("### 🧑‍💻 Semi-Automatic")
+    st.caption("Signal and contract are shown to you. You decide whether to place each trade in your broker.")
+    if st.button("Choose Semi-Automatic", use_container_width=True,
+                 type="primary" if st.session_state.trading_mode == "Semi-Automatic" else "secondary"):
+        st.session_state.trading_mode = "Semi-Automatic"
+        st.rerun()
+with auto_col:
+    st.markdown("### ⚡ Fully Automatic")
+    st.caption("Intended for rule-based order execution after live safeguards and broker protection are implemented.")
+    if st.button("Choose Fully Automatic", use_container_width=True,
+                 type="primary" if st.session_state.trading_mode == "Fully Automatic" else "secondary"):
+        st.session_state.trading_mode = "Fully Automatic"
+        st.rerun()
+
+mode_col, conn_col, risk_col = st.columns(3)
+mode_col.metric("Selected mode", st.session_state.trading_mode)
+conn_col.metric("Kite API", "Verified" if connected else "Not verified")
+risk_col.metric("Risk budget / trade", f"₹{capital*risk_pct/100:,.0f}")
+
+st.subheader("Real-money trading master switch")
+st.toggle(
+    "I authorize live trading mode",
+    key="live_trading_armed",
+    help="This is an authorization preference only. It does not place orders in this build."
+)
+if st.session_state.live_trading_armed:
+    st.error("LIVE MODE SELECTED — but live order placement is not implemented or connected. No real order can be sent from this version. Do not treat this switch as active broker execution.")
+else:
+    st.info("Live trading is OFF. Scanner and contract lookup are read-only.")
+st.caption("Switching modes or turning this control ON/OFF never submits, modifies, or cancels a broker order.")
+
+scanner_tab, options_tab, guide_tab = st.tabs(
+    ["Market scanner", "Option contract lookup", "Strategy & execution status"]
 )
 
 with scanner_tab:
-    left, right = st.columns([1, 1])
-    with left:
-        underlying = st.selectbox("Underlying index", ["NIFTY", "BANKNIFTY"], key="scan_underlying")
-    with right:
-        timeframe = st.selectbox("Signal timeframe", ["3minute", "5minute", "15minute"], key="scan_timeframe")
+    left, right = st.columns(2)
+    underlying = left.selectbox("Underlying index", ["NIFTY", "BANKNIFTY"], key="scan_underlying")
+    timeframe = right.selectbox("Signal timeframe", ["3minute", "5minute", "15minute"], key="scan_timeframe")
     if st.button("Scan index", type="primary"):
         try:
             if kite is None:
@@ -150,11 +142,11 @@ with scanner_tab:
         st.write("**Reason:**", result["reason"])
         st.dataframe(scan["data"].tail(30), use_container_width=True)
         if result["signal"] in ("BUY CE", "BUY PE"):
-            st.success(f"Direction signal: {result['signal']}. Go to Option chain tab to fetch and inspect the matching contract.")
+            st.success(f"Direction signal: {result['signal']}. Inspect the matching option contract in the next tab.")
             st.session_state["suggested_side"] = "CE" if result["signal"] == "BUY CE" else "PE"
 
 with options_tab:
-    st.subheader("Live NFO option contract selector")
+    st.subheader("Live NFO option contract lookup — read only")
     c1, c2, c3 = st.columns(3)
     opt_underlying = c1.selectbox("Underlying", ["NIFTY", "BANKNIFTY"], key="opt_underlying")
     suggested = st.session_state.get("suggested_side", "CE")
@@ -165,88 +157,32 @@ with options_tab:
             if kite is None:
                 st.error("Connect and verify Kite first.")
             else:
-                contract = select_option_contract(kite, opt_underlying, opt_side, moneyness)
-                st.session_state.selected_contract = contract
+                st.session_state.selected_contract = select_option_contract(
+                    kite, opt_underlying, opt_side, moneyness
+                )
         except Exception as exc:
             st.session_state.selected_contract = None
             st.error(f"Option selection failed: {exc}")
     contract = st.session_state.selected_contract
     if contract:
-        a,b,c,d = st.columns(4)
+        a, b, c, d = st.columns(4)
         a.metric("Spot", f'{contract["spot_ltp"]:,.2f}')
         b.metric("Option premium", f'₹{contract["option_ltp"]:,.2f}')
         c.metric("Strike / expiry", f'{contract["strike"]:g} · {contract["expiry"]}')
         d.metric("Lot size", contract["lot_size"])
         st.write(f'**Contract:** {contract["tradingsymbol"]} · {contract["side"]}')
-        e,f,g = st.columns(3)
+        e, f, g = st.columns(3)
         e.metric("Bid", f'₹{contract["best_bid"]:,.2f}' if contract["best_bid"] else "Unavailable")
         f.metric("Ask", f'₹{contract["best_ask"]:,.2f}' if contract["best_ask"] else "Unavailable")
         g.metric("Spread", f'{contract["spread_pct"]:.2f}%' if contract["spread_pct"] is not None else "Unavailable")
         if contract["spread_pct"] is not None and contract["spread_pct"] > 1.0:
-            st.warning("Bid/ask spread exceeds 1%. Contract is illiquid or costly; avoid paper entry unless reviewed.")
+            st.warning("Bid/ask spread exceeds 1%. Liquidity/cost risk is elevated.")
         if contract["volume"] == 0 or contract["oi"] == 0:
             st.warning("Volume or open interest is zero. Liquidity is not confirmed.")
-        qty = quantity_for_risk(capital, risk_pct, contract["option_ltp"], stop, contract["lot_size"])
-        st.write(f"**Risk-based quantity:** {qty} units ({qty // contract['lot_size']} lots) · budget ₹{capital*risk_pct/100:,.0f}")
-        if qty == 0:
-            st.warning("Capital/risk budget is insufficient for one lot at this premium and stop distance.")
-        else:
-            if st.button("Open PAPER trade", type="primary"):
-                allowed, reason = can_open_trade(st.session_state.paper_trades, max_trades, daily_loss)
-                if not allowed:
-                    st.error(reason)
-                else:
-                    trade = open_paper_trade(contract, qty, target, stop, trail_on, trail_pct)
-                    st.session_state.paper_trades.append(trade)
-                    st.success(f'Paper position opened: {contract["tradingsymbol"]} · {qty} units')
-                    st.rerun()
-        st.caption("Option contracts, expiry, lot size and quotes are read from Kite NFO instruments and quote endpoints. The chosen contract is the nearest expiry and selected moneyness.")
-
-with positions_tab:
-    st.subheader("Paper position monitor")
-    @st.fragment(run_every="5s")
-    def paper_position_monitor():
-        positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
-        if positions and kite is not None:
-            for trade in positions:
-                try:
-                    idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
-                    latest = get_option_ltp(kite, trade["tradingsymbol"])
-                    st.session_state.paper_trades[idx] = mark_paper_trade(trade, latest)
-                except Exception as exc:
-                    st.warning(f'{trade["tradingsymbol"]}: automatic paper quote check failed: {exc}')
-        positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
-        if positions:
-            for trade in positions:
-                st.markdown(f'**{trade["tradingsymbol"]}** · {trade["quantity"]} units · {trade["status"]}')
-                p1,p2,p3,p4 = st.columns(4)
-                p1.metric("Entry", f'₹{trade["entry_price"]:.2f}')
-                p2.metric("Last marked", f'₹{trade["ltp"]:.2f}')
-                p3.metric("Current P&L", f'₹{trade["pnl"]:,.2f}')
-                p4.metric("Stop / target", f'₹{trade["stop_price"]:.2f} / ₹{trade["target_price"]:.2f}')
-                if st.button(f'Manual paper exit {trade["tradingsymbol"]}', key=f'exit_{trade["id"]}', disabled=(kite is None)):
-                    try:
-                        idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
-                        latest = get_option_ltp(kite, trade["tradingsymbol"])
-                        st.session_state.paper_trades[idx] = close_paper_trade(trade, latest)
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Paper exit failed: {exc}")
-                st.divider()
-        else:
-            st.info("No open paper positions.")
-        if kite is None and positions:
-            st.warning("Kite disconnected: automatic paper stop/target checks cannot run.")
-    paper_position_monitor()
-    if st.session_state.paper_trades:
-        st.subheader("Trade history")
-        history = pd.DataFrame(st.session_state.paper_trades)
-        cols = ["tradingsymbol","status","quantity","entry_price","ltp","stop_price","target_price","pnl","exit_reason","opened_at","closed_at"]
-        st.dataframe(history[[c for c in cols if c in history.columns]], use_container_width=True)
-    realized = daily_realized_pnl(st.session_state.paper_trades)
-    st.metric("Daily realized P&L", f"₹{realized:,.2f}")
-    if realized <= -abs(daily_loss):
-        st.error("Daily loss limit reached. New paper trades blocked.")
+        st.metric("Risk budget", f"₹{capital*risk_pct/100:,.0f}")
+        st.write(f"Indicative stop distance: {stop_pct:.2f}% · Indicative target: {target_pct:.2f}%")
+        st.info("Contract lookup only. No entry button, paper trade, or broker order placement is available.")
+        st.caption("Contract, expiry, lot size and quote are read from Kite. Nearest expiry and selected moneyness are used.")
 
 with guide_tab:
     st.markdown("""**Signal framework (research approximation, not proprietary DTC code):**
@@ -256,12 +192,11 @@ with guide_tab:
 - PE: bearish EMA stack, close below VWAP and RSI weakness.
 - Incomplete confirmation returns WAIT.
 
-**Execution protections in this build:**
-- Real option contract and quote discovery from Kite.
-- Lot-size-aware quantity from capital-at-risk.
-- Paper target, initial stop and trailing stop.
-- Daily trade-count and realized-loss blocks.
-- No real order placement; paper positions persist only for the current Streamlit session. Restarting the app clears them.
+**Execution status**
+- Paper entry and paper position monitor have been removed from the dashboard.
+- Semi-Automatic and Fully Automatic are selectable preferences.
+- Live trading master switch is a UI authorization preference only; it is not connected to Kite order placement.
+- Broker-side SL/Target, order lifecycle reconciliation, persistent state, kill switch and audit logging are not implemented. Do not enable real trading based on this UI switch.
 
-This does not guarantee profits. Use a persistent trade journal, market-hours tests and extended paper forward testing before considering any live workflow.""")
-st.caption(f"Local time: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Live orders disabled")
+This tool does not guarantee profits. Validate all signals independently and understand options can lose the full premium.""")
+st.caption(f"Local time: {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Order execution not connected")

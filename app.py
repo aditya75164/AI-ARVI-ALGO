@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
-from kite_adapter import kite_client, login_url, generate_session, fetch_index_candles
+from kite_adapter import kite_client, login_url, generate_session, fetch_index_candles, get_secret
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
 IST = ZoneInfo("Asia/Kolkata")
@@ -27,8 +27,8 @@ with st.sidebar:
     daily_loss = st.number_input("Daily loss limit (₹)", min_value=500, value=2000, step=500)
     st.divider()
     st.subheader("Broker connection")
-    api_key_set = bool(os.getenv("KITE_API_KEY"))
-    api_secret_set = bool(os.getenv("KITE_API_SECRET"))
+    api_key_set = bool(get_secret("KITE_API_KEY"))
+    api_secret_set = bool(get_secret("KITE_API_SECRET"))
     st.write("API key:", "Configured" if api_key_set else "Missing")
     st.write("API secret:", "Configured" if api_secret_set else "Missing")
     if api_key_set and api_secret_set:

@@ -106,6 +106,15 @@ def run_scan_cycle(kite,cfg):
     open_positions=data["positions"]
     if len(open_positions)>=int(cfg["max_open_positions"]):
         return [{"status":"BLOCKED","reason":"Maximum open positions reached"}]
+    try:
+        broker_day=(kite.positions() or {}).get("day") or []
+        day_pnl=sum(float(p.get("pnl") or 0) for p in broker_day)
+    except Exception:
+        day_pnl=0.0
+    if day_pnl<=-abs(float(cfg["daily_loss_limit"])):
+        record_event("RISK_MANAGER","DAILY_LOSS_LIMIT","BLOCKED",
+                     "Daily loss limit reached; no new entries allowed",{"day_pnl":day_pnl})
+        return [{"status":"DAILY_LOSS_LIMIT","day_pnl":day_pnl}]
     for symbol in cfg["symbols"]:
         bot_name=f"{symbol}_5M"
         try:
@@ -177,9 +186,11 @@ def monitor_open_positions(kite):
                     outcomes.append({"symbol":symbol,"status":"STOP_FILLED"})
                     continue
             key=f"{position['exchange']}:{symbol}"
-            q=kite.ltp([key]).get(key,{})
+            q=kite.quote([key]).get(key,{})
             ltp=float(q.get("last_price") or 0)
-            if ltp<=0: continue
+            quote_time=q.get("timestamp") or q.get("last_trade_time")
+            quote_age=quote_timestamp_age_seconds(quote_time) if quote_time else None
+            if ltp<=0 or quote_age is None or quote_age>5: continue
             if ltp>=float(position["target_price"]):
                 # Cancel the protective stop and confirm cancellation before sending target exit.
                 if stop_id:

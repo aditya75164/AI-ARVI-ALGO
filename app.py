@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
@@ -127,10 +128,29 @@ with tabs[0]:
         except Exception as exc:
             st.error(f"Unable to read Kite portfolio: {exc}")
     ledger=dashboard_data()
+    st.markdown("#### Background worker health")
+    heartbeats=ledger.get("heartbeats",[])
+    if heartbeats:
+        hb=pd.DataFrame(heartbeats)
+        hb["heartbeat_time"]=pd.to_datetime(hb["heartbeat_time"],errors="coerce",utc=True)
+        now=pd.Timestamp.now(tz="UTC")
+        hb["age_seconds"]=(now-hb["heartbeat_time"]).dt.total_seconds()
+        hb["health"]=hb.apply(lambda r:"STALE" if pd.isna(r["age_seconds"]) or r["age_seconds"]>120 else r["status"],axis=1)
+        st.dataframe(hb[["worker_name","heartbeat_time","health","age_seconds","message"]],use_container_width=True,hide_index=True)
+        if (hb["health"]=="STALE").any():
+            st.warning("Worker heartbeat is stale. The background service may be stopped or unable to reach the shared database.")
+    else:
+        st.info("No worker heartbeat found. Deploy the worker and point dashboard + worker to the same persistent ARVI_DB_PATH.")
+    if ledger["positions"]:
+        st.markdown("#### Bot-managed open positions")
+        st.dataframe(pd.DataFrame(ledger["positions"]),use_container_width=True,hide_index=True)
+    if ledger["orders"]:
+        st.markdown("#### Bot order ledger")
+        st.dataframe(pd.DataFrame(ledger["orders"]),use_container_width=True,hide_index=True)
     if ledger["events"]:
         st.markdown("#### Bot activity log")
         st.dataframe(pd.DataFrame(ledger["events"]),use_container_width=True,hide_index=True)
-    st.warning("Live auto-entry/exit engine is not yet enabled. This screen currently synchronises and displays actual broker activity only. Do not treat the existing read-only scanners as running bots.")
+    st.warning("This dashboard reports broker records and worker activity. Worker and dashboard must share the same persistent database path. Live entries remain disabled by default; do not enable until end-to-end broker testing is complete.")
 with tabs[1]:
     st.subheader("Daily market briefing")
     st.caption("NIFTY 50 and BANK NIFTY conditional scenarios, indicator-derived levels and market-moving headlines.")

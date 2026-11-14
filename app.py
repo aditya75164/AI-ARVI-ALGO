@@ -187,7 +187,7 @@ with tabs[3]:
     if stats:
         st.caption(f"Checked {stats['checked']} contracts · Eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
         if stats['reason']=='Last working session data':
-            st.info('LAST WORKING SESSION DATA · Market is currently closed. These are reference quotes from the most recent trading session, not live prices.')
+            st.info('LATEST COMPLETED SESSION DATA · Showing the most recent available trading-session quotes as reference values.')
     if contracts is not None and not contracts.empty:
         view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange"]]
         st.dataframe(view,use_container_width=True)

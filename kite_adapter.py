@@ -187,7 +187,7 @@ def validate_option_liquidity(snapshot, max_spread_pct=3.0):
     elif spread>max_spread_pct: reasons.append(f"spread too wide ({spread:.2f}%)")
     age=snapshot.get("age_seconds")
     if age is None: reasons.append("quote timestamp unavailable")
-    elif age>4*24*60*60: reasons.append(f"quote stale ({age/3600:.1f} hours old)")
+    elif age>180: reasons.append(f"quote stale ({age:.0f} seconds old)")
     return {"eligible":not reasons,"reasons":reasons,"spread_pct":spread}
 
 def get_quote_snapshot(kite, exchange, tradingsymbol):

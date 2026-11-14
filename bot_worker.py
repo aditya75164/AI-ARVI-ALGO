@@ -143,14 +143,21 @@ def run_scan_cycle(kite,cfg):
             # Wait briefly for broker confirmation; never assume an acknowledgement is a fill.
             time.sleep(2)
             latest=reconcile_order(kite,order_id,bot_name)
-            if latest.get("status")!="COMPLETE" or int(latest.get("filled_quantity") or 0)<=0:
+            filled=int(latest.get("filled_quantity") or 0)
+            if filled<=0:
                 if latest.get("status") in ("OPEN","PENDING"):
                     try: cancel_order(kite,order_id)
                     except Exception: pass
-                record_event(bot_name,"ENTRY_NOT_FILLED",latest.get("status","UNKNOWN"),"Entry was not confirmed filled; no protective stop was sent",{"order_id":order_id})
+                record_event(bot_name,"ENTRY_NOT_FILLED",latest.get("status","UNKNOWN"),"No entry fill confirmed; no protective stop was sent",{"order_id":order_id})
                 events.append({"bot":bot_name,"status":"ENTRY_NOT_FILLED","order_id":order_id})
                 continue
-            filled=int(latest["filled_quantity"]); average=float(latest.get("average_price") or intent["entry_price"])
+            if latest.get("status")!="COMPLETE":
+                # Protect any partial fill after cancelling the unfilled remainder.
+                try: cancel_order(kite,order_id)
+                except Exception: pass
+                latest=reconcile_order(kite,order_id,bot_name)
+                filled=int(latest.get("filled_quantity") or filled)
+            average=float(latest.get("average_price") or intent["entry_price"])
             intent["entry_price"]=average
             sl_id=place_protective_stop(kite,intent,filled,bot_name,order_id)
             upsert_position({"position_key":order_id,"bot_name":bot_name,"tradingsymbol":intent["tradingsymbol"],

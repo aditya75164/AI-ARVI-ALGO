@@ -50,7 +50,7 @@ services:
       - arvi-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      test: ["CMD", "python", "worker_healthcheck.py", "STOCK_FNO"]
       interval: 30s
       timeout: 5s
       retries: 3

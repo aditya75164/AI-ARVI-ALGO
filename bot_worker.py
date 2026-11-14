@@ -261,7 +261,8 @@ def main():
         now=datetime.now(IST)
         if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20":
             try:
-                exits=monitor_open_positions(kite) if live_enabled() else []
+                # Always manage already-open positions, even if the new-entry switch is OFF.
+                exits=monitor_open_positions(kite)
                 result=run_scan_cycle(kite,cfg)
                 LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
             except Exception:

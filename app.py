@@ -202,55 +202,54 @@ with tabs[3]:
         else:
             view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
             st.dataframe(view,use_container_width=True)
-        else:
-            chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
-            row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
-            if st.button("Monitor selected option"):
-                st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen,"instrument_token":int(row["instrument_token"])}
-            sel=st.session_state.selected_derivative
-            if sel and sel["tradingsymbol"]==chosen:
-                @st.fragment(run_every=refresh_seconds)
-                def option_monitor():
-                    try:
-                        now_ist=datetime.now(IST)
-                        market_open=now_ist.weekday()<5 and '09:15'<=now_ist.strftime('%H:%M')<='15:30'
-                        if not market_open:
-                            token=int(sel["instrument_token"])
-                            candles=kite.historical_data(token,now_ist-timedelta(days=7),now_ist,"day")
-                            if not candles:
-                                st.warning("No previous-session historical candle is available for this contract.")
-                                return
-                            last=candles[-1]
-                            candle_date=pd.Timestamp(last["date"]).strftime("%d-%b-%Y")
-                            st.info(f"LAST COMPLETED SESSION · {candle_date} · Historical reference only")
-                            st.metric(f"{chosen} previous close",f"₹{float(last['close']):,.2f}")
-                            hcols=st.columns(3)
-                            hcols[0].metric("Session volume",f"{int(last.get('volume') or 0):,}")
-                            hcols[1].metric("Session high",f"₹{float(last.get('high') or 0):,.2f}")
-                            hcols[2].metric("Session low",f"₹{float(last.get('low') or 0):,.2f}")
-                            if last.get("oi") is not None:
-                                st.metric("End-of-session OI",f"{int(last.get('oi') or 0):,}")
-                            st.caption("Historical candles do not contain live bid/ask depth. This is not a live quote or an executable liquidity check.")
+        chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
+        row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
+        if st.button("Monitor selected option"):
+            st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen,"instrument_token":int(row["instrument_token"])}
+        sel=st.session_state.selected_derivative
+        if sel and sel["tradingsymbol"]==chosen:
+            @st.fragment(run_every=refresh_seconds)
+            def option_monitor():
+                try:
+                    now_ist=datetime.now(IST)
+                    market_open=now_ist.weekday()<5 and '09:15'<=now_ist.strftime('%H:%M')<='15:30'
+                    if not market_open:
+                        token=int(sel["instrument_token"])
+                        candles=kite.historical_data(token,now_ist-timedelta(days=7),now_ist,"day")
+                        if not candles:
+                            st.warning("No previous-session historical candle is available for this contract.")
                             return
-                        q=get_quote_snapshot(kite,ex,chosen)
-                        check=validate_option_liquidity(q,max_age_seconds=180)
-                        if not check["eligible"]:
-                            st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
-                            a,b,c=st.columns(3)
-                            a.metric("LTP (reference only)",f"₹{q['last_price']:,.2f}")
-                            b.metric("Volume",f"{q['volume']:,}")
-                            c.metric("Open interest",f"{q['oi']:,}")
-                            st.caption(f"Bid / Ask: {q['bid']:g} / {q['ask']:g} · Quote time: {q['timestamp'] or 'missing'}")
-                            return
-                        st.success(f"{'LIVE' if market_open else 'LAST SESSION REFERENCE'} · LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
-                        st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
+                        last=candles[-1]
+                        candle_date=pd.Timestamp(last["date"]).strftime("%d-%b-%Y")
+                        st.info(f"LAST COMPLETED SESSION · {candle_date} · Historical reference only")
+                        st.metric(f"{chosen} previous close",f"₹{float(last['close']):,.2f}")
+                        hcols=st.columns(3)
+                        hcols[0].metric("Session volume",f"{int(last.get('volume') or 0):,}")
+                        hcols[1].metric("Session high",f"₹{float(last.get('high') or 0):,.2f}")
+                        hcols[2].metric("Session low",f"₹{float(last.get('low') or 0):,.2f}")
+                        if last.get("oi") is not None:
+                            st.metric("End-of-session OI",f"{int(last.get('oi') or 0):,}")
+                        st.caption("Historical candles do not contain live bid/ask depth. This is not a live quote or an executable liquidity check.")
+                        return
+                    q=get_quote_snapshot(kite,ex,chosen)
+                    check=validate_option_liquidity(q,max_age_seconds=180)
+                    if not check["eligible"]:
+                        st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
                         a,b,c=st.columns(3)
-                        a.metric("Volume",f"{q['volume']:,}")
-                        b.metric("Open interest",f"{q['oi']:,}")
-                        c.metric("Bid / Ask",f"{q['bid']:g} / {q['ask']:g}")
-                        st.caption(f"Quote time: {q['timestamp'] or 'not supplied'}")
-                    except Exception as exc: st.error(f"Option quote failed: {exc}")
-                option_monitor()
+                        a.metric("LTP (reference only)",f"₹{q['last_price']:,.2f}")
+                        b.metric("Volume",f"{q['volume']:,}")
+                        c.metric("Open interest",f"{q['oi']:,}")
+                        st.caption(f"Bid / Ask: {q['bid']:g} / {q['ask']:g} · Quote time: {q['timestamp'] or 'missing'}")
+                        return
+                    st.success(f"{'LIVE' if market_open else 'LAST SESSION REFERENCE'} · LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
+                    st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
+                    a,b,c=st.columns(3)
+                    a.metric("Volume",f"{q['volume']:,}")
+                    b.metric("Open interest",f"{q['oi']:,}")
+                    c.metric("Bid / Ask",f"{q['bid']:g} / {q['ask']:g}")
+                    st.caption(f"Quote time: {q['timestamp'] or 'not supplied'}")
+                except Exception as exc: st.error(f"Option quote failed: {exc}")
+            option_monitor()
     elif contracts is not None and contracts.empty:
         st.warning('No contracts passed the live liquidity checks. This is separate from the total number of F&O stocks/option contracts.')
     else:

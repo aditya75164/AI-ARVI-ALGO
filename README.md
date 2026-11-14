@@ -2,6 +2,13 @@
 
 Read-only Streamlit market scanner with separate F&O-underlying and NSE cash-equity stock selection.
 
+## Daily market briefing
+- A dedicated first tab fetches NIFTY 50 and BANK NIFTY daily index candles from Kite.
+- It shows conditional bullish/bearish trigger levels, two targets and invalidation levels, plus prior 20-session support/resistance and ATR(14).
+- Scenarios use the last completed daily candle (the current in-progress daily candle is excluded during market hours).
+- Market headlines are retrieved from Google News RSS with publisher, publication time and article links. The news cache refreshes every 15 minutes; use Refresh news for an immediate refresh.
+- This is a technical scenario report, not a guaranteed prediction. News headlines are contextual and are not automatically converted into directional signals.
+
 ## Stock selection
 - F&O Stock Selection derives underlyings from unexpired NFO stock futures and maps them to NSE cash instruments.
 - Equity Stock Selection scans NSE cash equities separately.

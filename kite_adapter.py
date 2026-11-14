@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -43,6 +44,29 @@ def generate_session(request_token: str) -> str:
         raise ValueError("Request token is required")
     session = KiteConnect(api_key=key).generate_session(request_token.strip(), api_secret=secret)
     return session["access_token"]
+
+def persist_access_token(access_token: str) -> None:
+    """Persist the short-lived Kite access token to the local, git-ignored .env file."""
+    token = str(access_token or "").strip()
+    if not token or "\n" in token or "\r" in token:
+        raise ValueError("A valid Kite access token is required")
+    env_path = Path(__file__).resolve().parent / ".env"
+    existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    output = []
+    replaced = False
+    for line in existing:
+        if line.strip().startswith("KITE_ACCESS_TOKEN="):
+            if not replaced:
+                output.append("KITE_ACCESS_TOKEN=" + token)
+                replaced = True
+        else:
+            output.append(line)
+    if not replaced:
+        output.append("KITE_ACCESS_TOKEN=" + token)
+    temp_path = env_path.with_suffix(".env.tmp")
+    temp_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    os.replace(temp_path, env_path)
+    os.environ["KITE_ACCESS_TOKEN"] = token
 
 def fetch_index_candles(kite, symbol: str, interval: str) -> pd.DataFrame:
     if symbol not in INDEX_TOKENS or interval not in INTERVALS:

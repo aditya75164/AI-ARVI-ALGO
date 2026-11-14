@@ -28,7 +28,12 @@ def read_nse_bhavcopy(uploaded_file):
         "HIGH":["HGHPRIC","HIGH","HIGH_PRICE"],
         "LOW":["LWPRIC","LOW","LOW_PRICE"],
         "CLOSE":["CLSPRIC","CLOSE","CLOSE_PRICE"],
-        "VOLUME":["TOTTRDQTY","TTL_TRD_QNTY","TOTTRDQTY","VOLUME"],
+        "VOLUME":["TOTTRDQTY","TTL_TRD_QNTY","TOTTRDQTY","TTLTRADGVOL","TTL_TRD_QNTY","VOLUME"],
+        "OI":["OPNINTRST","OPENINTEREST","OI","OPN_INTRST"],
+        "CHANGE_IN_OI":["CHNGINOPNINTRST","CHANGEINOI"],
+        "STRIKE":["STRKPRIC","STRIKEPRICE","STRIKE"],
+        "OPTION_TYPE":["OPTNTP","OPTIONTYPE","OPTION_TYPE"],
+        "EXPIRY":["XPRYDT","EXPIRY","EXPIRYDATE"],
         "SERIES":["SCTYSRS","SERIES"],
     }
     rename={}
@@ -41,7 +46,7 @@ def read_nse_bhavcopy(uploaded_file):
     missing=[x for x in required if x not in frame.columns]
     if missing:
         raise ValueError(f"Bhavcopy missing required columns: {', '.join(missing)}")
-    for col in ("OPEN","HIGH","LOW","CLOSE","VOLUME"):
+    for col in ("OPEN","HIGH","LOW","CLOSE","VOLUME","OI","CHANGE_IN_OI","STRIKE"):
         if col in frame:
             frame[col]=pd.to_numeric(frame[col],errors="coerce")
     if "DATE" in frame:
@@ -50,6 +55,8 @@ def read_nse_bhavcopy(uploaded_file):
         frame=frame[frame["SERIES"].astype(str).str.upper().eq("EQ")]
     frame["SYMBOL"]=frame["SYMBOL"].astype(str).str.upper().str.strip()
     frame["DATA_SOURCE"]="NSE official bhavcopy upload"
+    if "EXPIRY" in frame:
+        frame["EXPIRY"]=pd.to_datetime(frame["EXPIRY"],errors="coerce",dayfirst=True)
     return frame.reset_index(drop=True)
 
 

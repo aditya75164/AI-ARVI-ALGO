@@ -516,7 +516,11 @@ with tabs[8]:
                 bt_contract=select_option_contract(kite,bt_underlying,bt_side,bt_moneyness)
                 end=datetime.now(IST); start=end-timedelta(days=30)
                 candles=kite.historical_data(bt_contract["instrument_token"],start,end,"5minute")
-                result=backtest_ema_strategy(pd.DataFrame(candles),fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                candle_frame = pd.DataFrame(candles)
+                if "date" not in candle_frame.columns or candle_frame.empty:
+                    raise RuntimeError("Kite historical candles did not include timestamps; cannot show Indian market time.")
+                candle_frame["date"] = pd.to_datetime(candle_frame["date"], errors="coerce", utc=True).dt.tz_convert("Asia/Kolkata")
+                result=backtest_ema_strategy(candle_frame,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
                 st.session_state.paper_backtest_result={"contract":bt_contract["tradingsymbol"],"result":result}
             except Exception as exc: st.error(f"Backtest failed: {exc}")
     bt_saved=st.session_state.get("paper_backtest_result")

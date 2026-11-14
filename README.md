@@ -1,21 +1,21 @@
 # AI ARVI ALGO — F&O and Equity Stock Scanner
 
-Read-only Streamlit market scanner. The primary workflows are separate stock-selection screens for (1) F&O-eligible stock underlyings and (2) NSE cash-equity stocks.
+Read-only Streamlit market scanner with separate F&O-underlying and NSE cash-equity stock selection.
 
-## Main screens
-- **F&O Stock Selection:** derives its stock universe from unexpired NFO stock futures, maps each underlying to its NSE cash instrument, ranks liquid candidates, and analyses daily historical candles.
-- **Equity Stock Selection:** scans the NSE cash-equity universe independently using the same daily-candle trend and volume methodology.
-- Both tables show stock, price, BUY/SELL/WAIT, trend, score, RSI, relative volume, momentum, volume, entry reference, target, stop loss, candle date and data source.
-- Target and stop-loss percentages are editable. Defaults are 10% and 5%; they are calculation references, not predicted or guaranteed returns.
-- Additional screens retain live quote monitoring, NIFTY/BANKNIFTY indicators and F&O option contract monitoring.
-
-## Data and method
-- Kite instrument masters define the F&O and NSE equity universes.
-- Kite quote data ranks candidate stocks by turnover when available.
-- Kite historical daily candles drive the stock signal calculation. If quote volume is unavailable (for example, outside market hours), the scanner falls back to a bounded deterministic slice of the instrument universe and labels results by their historical candle date.
-- Daily signals use six EMAs (30/35/40/45/50/60), VWAP, RSI(14), relative volume and six-session momentum.
+## Stock selection
+- F&O Stock Selection derives underlyings from unexpired NFO stock futures and maps them to NSE cash instruments.
+- Equity Stock Selection scans NSE cash equities separately.
+- Both use Kite quotes for live turnover ranking where available; when quotes are unavailable, the scanner ranks a bounded candidate set by the latest completed daily candle's close × volume. The table identifies whether its ranking is based on live quote or last-session history.
+- Signals use six EMAs (30/35/40/45/50/60), VWAP, RSI(14), relative volume and six-session momentum.
 - BUY requires bullish EMA alignment, close above VWAP, RSI >= 52 and positive momentum. SELL requires bearish EMA alignment, close below VWAP, RSI <= 48 and negative momentum. Otherwise WAIT.
-- This is a technical screening rule, not a promise of 10% returns or investment advice. Validate liquidity and current prices before any decision.
+
+## Indicator-derived price levels (no fixed 10%/5%)
+- ATR(14) is calculated from daily true range.
+- Support and resistance use the prior 20 completed daily candles, excluding the current candle.
+- For BUY, target levels use the nearest valid 20-session resistance and 2×/3× ATR extensions; stop uses the more conservative of recent support and a 1.5× ATR buffer.
+- For SELL, target levels use the nearest valid 20-session support and 2×/3× ATR extensions; stop uses recent resistance and a 1.5× ATR buffer.
+- The table displays Entry, Target 1, Target 2, Stop Loss, expected P/L per share, expected P/L %, risk/reward, ATR, support/resistance, and candle date.
+- These are technical estimates from the last available daily candle, not guaranteed outcomes. WAIT rows are not entry recommendations. Use a current quote to refresh entry before acting.
 
 ## Setup
 Configure `KITE_API_KEY`, `KITE_API_SECRET`, and optionally `KITE_ACCESS_TOKEN` in Streamlit Cloud Secrets or environment variables. Never commit credentials.
@@ -26,4 +26,4 @@ streamlit run app.py
 ```
 
 ## Limitations and safety
-The app is read-only. It does not place, modify or cancel broker orders. Kite quote polling is not an exchange tick-by-tick WebSocket feed. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. No result is guaranteed to be profitable.
+The app is read-only and does not place, modify or cancel broker orders. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. Intraday price may differ from the last completed daily candle. No result is guaranteed to be profitable.

@@ -132,38 +132,47 @@ def enrich_fno_option_premiums(kite,stocks,max_stocks=35,batch_size=150):
         ask_qty=sum(int(x.get("quantity") or 0) for x in asks)
         bid=float((bids[0] if bids else {}).get("price") or 0)
         ask=float((asks[0] if asks else {}).get("price") or 0)
-        if premium<=0 or volume<=0 or oi<=0 or bid<=0 or ask<=0 or ask<bid or bid_qty<=0 or ask_qty<=0:
+        # This module builds a historical research shortlist. Kite quotes are often
+        # stale after market hours/weekends, so freshness/depth are reported but
+        # must not suppress historical candle backtests. Live paper entry must
+        # independently re-check a fresh quote, spread and depth before execution.
+        if premium<=0 or volume<=0 or oi<=0:
             continue
         stamp=q.get("timestamp") or q.get("last_trade_time")
-        if not stamp: continue
-        stamp=pd.Timestamp(stamp)
-        if stamp.tzinfo is None: stamp=stamp.tz_localize(IST)
-        if (pd.Timestamp(now)-stamp.tz_convert(IST)).total_seconds()>240: continue
+        quote_age=None
+        if stamp:
+            stamp=pd.Timestamp(stamp)
+            if stamp.tzinfo is None: stamp=stamp.tz_localize(IST)
+            quote_age=max(0.0,(pd.Timestamp(now)-stamp.tz_convert(IST)).total_seconds())
+        depth_valid=bool(bid>0 and ask>0 and ask>=bid and bid_qty>0 and ask_qty>0)
+        spread=(ask-bid)/premium*100 if depth_valid else None
+        if spread is not None and spread>10:
+            continue
         theta,iv=theta_per_day(spot,float(row["strike"]),row["expiry"],premium,side,now)
-        if theta is None: continue
-        spread=(ask-bid)/premium*100
-        if spread>5: continue
-        buyer_ratio=bid_qty/max(ask_qty,1)
+        buyer_ratio=bid_qty/max(ask_qty,1) if depth_valid else None
         picks.append({
             "Stock":name,"Option Side":side,"Option Symbol":row["tradingsymbol"],
             "Option Expiry":str(row["expiry"]),"Option Strike":float(row["strike"]),
-            "Option Premium":round(premium,2),"Option Theta / Day":round(theta,3),
-            "Implied Volatility %":round(iv,2),"Buyer Bid Qty":bid_qty,
-            "Seller Ask Qty":ask_qty,"Buyer Pressure":round(buyer_ratio,2),
-            "Option Volume":volume,"Option OI":oi,"Option Spread %":round(spread,2),
+            "Option Premium":round(premium,2),"Option Theta / Day":round(theta,3) if theta is not None else None,
+            "Implied Volatility %":round(iv,2) if iv is not None else None,"Buyer Bid Qty":bid_qty,
+            "Seller Ask Qty":ask_qty,"Buyer Pressure":round(buyer_ratio,2) if buyer_ratio is not None else None,
+            "Option Volume":volume,"Option OI":oi,"Option Spread %":round(spread,2) if spread is not None else None,
+            "Option Quote Age Seconds":round(quote_age,1) if quote_age is not None else None,
+            "Depth Available":depth_valid,
             "Option Lot Size":int(row["lot_size"]),"Option Quote Time":str(stamp),
         })
     if not picks: return pd.DataFrame()
     frame=pd.DataFrame(picks)
-    # Per stock: insist on stronger bid quantity than ask quantity; prefer low theta,
-    # then stronger buyer pressure and OI, without pretending this is a live BUY order.
-    frame=frame[frame["Buyer Pressure"]>=1.2]
-    if frame.empty: return frame
-    # Prefer the smallest absolute daily theta decay, then stronger displayed
-    # bid-side depth, OI, volume and tighter spread for each unique underlying.
-    frame["Absolute Theta / Day"] = frame["Option Theta / Day"].abs()
+    # Do not impose buyer-depth dominance on a historical research shortlist:
+    # many Kite quotes have no depth outside market hours. Rank one contract per
+    # stock using available fields; actual paper entries must revalidate live depth.
+    frame["Absolute Theta / Day"] = pd.to_numeric(frame["Option Theta / Day"],errors="coerce").abs().fillna(float("inf"))
+    frame["Buyer Pressure Rank"] = pd.to_numeric(frame["Buyer Pressure"],errors="coerce").fillna(0)
+    frame["Option Spread Rank"] = pd.to_numeric(frame["Option Spread %"],errors="coerce").fillna(float("inf"))
     frame=frame.sort_values(
-        ["Stock","Absolute Theta / Day","Buyer Pressure","Option OI","Option Volume","Option Spread %"],
+        ["Stock","Absolute Theta / Day","Option OI","Option Volume","Buyer Pressure Rank","Option Spread Rank"],
         ascending=[True,True,False,False,False,True]
     )
-    return frame.drop_duplicates("Stock").drop(columns=["Absolute Theta / Day"]).reset_index(drop=True)
+    return frame.drop_duplicates("Stock").drop(
+        columns=["Absolute Theta / Day","Buyer Pressure Rank","Option Spread Rank"]
+    ).reset_index(drop=True)

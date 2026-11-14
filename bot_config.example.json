@@ -1,0 +1,10 @@
+{
+  "symbols": ["NIFTY", "BANKNIFTY"],
+  "interval": "5minute",
+  "poll_seconds": 30,
+  "max_risk_per_trade": 500,
+  "max_lots": 1,
+  "max_open_positions": 1,
+  "daily_loss_limit": 1500,
+  "product": "MIS"
+}

@@ -1,156 +1,138 @@
-"""Rank equity F&O underlyings using trend, momentum, relative volume and headline context.
+"""Stock universe scanners for F&O underlyings and NSE cash equities.
 
-This is a watchlist filter, not a return predictor. A 10% target is a user-defined
-watch horizon and is never represented as a likely or guaranteed return.
+Selection is based on Kite instrument masters, quote turnover and historical daily
+candles. It never requires a matching news headline to return a technically valid stock.
 """
 from datetime import datetime, timedelta
-from urllib.parse import quote
-from urllib.request import Request, urlopen
-from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 import pandas as pd
 from engine import add_dtc_style_indicators
 
 IST=ZoneInfo("Asia/Kolkata")
-POSITIVE={"beats","growth","profit","upgrade","order win","strong","record","buyback","approval","expansion","raises","surge","partnership"}
-NEGATIVE={"miss","loss","downgrade","fraud","probe","default","weak","decline","fall","cuts","ban","warning","resigns"}
-
-def fetch_global_headlines(timeout=6):
-    query=quote("global markets OR crude oil OR US markets OR Federal Reserve OR India stocks")
-    url=f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
-    req=Request(url,headers={"User-Agent":"Mozilla/5.0 AI-ARVI-ALGO market research"})
-    try:
-        with urlopen(req,timeout=timeout) as response:
-            root=ET.fromstring(response.read())
-        return [item.findtext("title","") for item in root.findall(".//item")][:40]
-    except Exception:
-        return []
-
-def headline_score(name, symbol, headlines):
-    related=[h.lower() for h in headlines if name.lower() in h.lower() or symbol.lower() in h.lower()]
-    if not related:
-        return 0, "No matching headline found"
-    text=" ".join(related)
-    pos=sum(1 for word in POSITIVE if word in text)
-    neg=sum(1 for word in NEGATIVE if word in text)
-    score=max(-1,min(1,(pos-neg)/max(1,pos+neg)))
-    return score, " | ".join(related[:2])
 
 
-def quote_is_usable(quote, now=None):
-    """Require positive volume, two-sided depth, tight spread and a recent quote."""
-    if not quote:
-        return False, "missing quote"
-    price=float(quote.get("last_price") or 0)
-    volume=int(quote.get("volume") or 0)
-    depth=quote.get("depth") or {}
-    bid=float(((depth.get("buy") or [{}])[0]).get("price") or 0)
-    ask=float(((depth.get("sell") or [{}])[0]).get("price") or 0)
-    if price<=0 or volume<=0:
-        return False, "zero price or traded volume"
-    if bid<=0 or ask<=0 or ask<bid:
-        return False, "missing/invalid bid-ask depth"
-    spread=(ask-bid)/price*100
-    if spread>2.0:
-        return False, f"spread too wide ({spread:.2f}%)"
-    stamp=quote.get("timestamp") or quote.get("last_trade_time")
-    if not stamp:
-        return False, "quote timestamp missing"
-    ts=pd.Timestamp(stamp)
-    if ts.tzinfo is None:
-        ts=ts.tz_localize(IST)
-    else:
-        ts=ts.tz_convert(IST)
-    current=pd.Timestamp(now or datetime.now(IST))
-    if current.tzinfo is None:
-        current=current.tz_localize(IST)
-    else:
-        current=current.tz_convert(IST)
-    if ts.date()!=current.date():
-        return False, "quote is not from today's session"
-    if (current-ts).total_seconds()>180:
-        return False, "quote older than 180 seconds"
-    return True, "ok"
-
-def score_stock(frame, name, symbol, headlines):
-    if frame is None or len(frame)<65:
-        return None
-    d=add_dtc_style_indicators(frame)
-    row=d.iloc[-1]; prev=d.iloc[-2]
-    required=["EMA_30","EMA_35","EMA_40","EMA_45","EMA_50","EMA_60","RSI_14","RELATIVE_VOLUME","VWAP"]
-    if any(pd.isna(row.get(k)) for k in required):
-        return None
-    trend=bool(row["EMA_BULL"] and row["Close"]>row["VWAP"])
-    momentum=(float(row["Close"])/float(d["Close"].iloc[-5])-1)*100 if float(d["Close"].iloc[-5]) else 0
-    relvol=float(row["RELATIVE_VOLUME"])
-    rsi=float(row["RSI_14"])
-    news, headline=headline_score(name,symbol,headlines)
-    trend_pts=30 if trend else 0
-    volume_pts=min(25,max(0,(relvol-1)*12.5))
-    momentum_pts=min(20,max(0,momentum*4))
-    rsi_pts=10 if 55<=rsi<=75 else 5 if 50<=rsi<55 else 0
-    if not headline or headline=="No matching headline found":
-        return None
-    news_pts=15*news if news>0 else 0
-    total=round(trend_pts+volume_pts+momentum_pts+rsi_pts+news_pts,1)
-    if not (trend and relvol>=1.5 and momentum>0 and 55<=rsi<=80):
-        return None
-    return {
-        "name":name,"symbol":symbol,"score":total,"last_price":float(row["Close"]),
-        "momentum_pct":round(momentum,2),"relative_volume":round(relvol,2),
-        "rsi":round(rsi,1),"news_score":round(news,2),"headline":headline,
-        "target_reference_pct":10.0,
-    }
-
-def scan_fno_stock_candidates(kite, max_stocks=25):
-    """Scan liquid F&O underlyings; bounded history calls to reduce API load."""
-    fno=pd.DataFrame(kite.instruments("NFO"))
+def _universe(kite, market):
     cash=pd.DataFrame(kite.instruments("NSE"))
-    required={"name","instrument_type","tradingsymbol","expiry"}
-    if fno.empty or cash.empty or not required.issubset(fno.columns):
-        raise RuntimeError("Kite NFO/NSE instrument master is unavailable")
+    if cash.empty or not {"tradingsymbol","instrument_token","segment"}.issubset(cash.columns):
+        raise RuntimeError("NSE instrument master is unavailable")
+    cash=cash[cash["segment"].astype(str).eq("NSE")].copy()
+    cash=cash.drop_duplicates("tradingsymbol")
+    if market=="EQUITY":
+        if "instrument_type" in cash:
+            cash=cash[cash["instrument_type"].astype(str).isin(["EQ",""])]
+        return [(str(r.tradingsymbol),int(r.instrument_token)) for r in cash.itertuples()]
+    fno=pd.DataFrame(kite.instruments("NFO"))
+    if fno.empty or not {"name","instrument_type","expiry"}.issubset(fno.columns):
+        raise RuntimeError("NFO instrument master is unavailable")
     today=datetime.now(IST).date()
-    fno=fno[(fno["instrument_type"].astype(str)=="FUT")].copy()
-    fno["expiry"]=pd.to_datetime(fno["expiry"],errors="coerce").dt.date
-    fno=fno[fno["expiry"]>=today].sort_values("expiry").drop_duplicates("name")
-    cash=cash[cash["segment"].astype(str).eq("NSE")].drop_duplicates("tradingsymbol")
-    mapping={str(r.tradingsymbol):int(r.instrument_token) for r in cash.itertuples() if hasattr(r,"instrument_token")}
-    names=[]
-    for n in fno["name"].astype(str).tolist():
-        if n in mapping: names.append((n,mapping[n]))
-    if not names: return []
-    headlines=fetch_global_headlines()
-    keys=[f"NSE:{name}" for name,_ in names[:500]]
-    quotes=kite.quote(keys)
-    liquid=[]
-    for name,token in names:
-        q=quotes.get(f"NSE:{name}",{})
-        volume=int(q.get("volume") or 0)
-        price=float(q.get("last_price") or 0)
-        valid, _reason=quote_is_usable(q)
-        if valid:
-            liquid.append((name,token,volume,price))
-    liquid=sorted(liquid,key=lambda x:x[2]*x[3],reverse=True)[:max_stocks]
-    now=datetime.now(IST)
-    picks=[]
-    for name,token,volume,price in liquid:
+    fut=fno[fno["instrument_type"].astype(str).eq("FUT")].copy()
+    fut["expiry"]=pd.to_datetime(fut["expiry"],errors="coerce").dt.date
+    fut=fut[fut["expiry"]>=today].sort_values("expiry").drop_duplicates("name")
+    token_map={str(r.tradingsymbol):int(r.instrument_token) for r in cash.itertuples()}
+    return [(str(name),token_map[str(name)]) for name in fut["name"] if str(name) in token_map]
+
+
+def _quote_turnover(kite, universe, batch_size=150):
+    keys=[f"NSE:{symbol}" for symbol,_ in universe]
+    rows=[]
+    for i in range(0,len(keys),batch_size):
         try:
-            candles=kite.historical_data(token,now-timedelta(days=8),now,"5minute")
-            if not candles: continue
-            frame=pd.DataFrame(candles).set_index("date").sort_index()
-            frame=frame.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
-            if frame.empty:
-                continue
-            last_bar=pd.Timestamp(frame.index[-1])
-            if last_bar.tzinfo is None:
-                last_bar=last_bar.tz_localize(IST)
-            current=pd.Timestamp(now)
-            if last_bar.date()!=current.date() or (current-last_bar).total_seconds()>15*60:
-                continue
-            result=score_stock(frame,name,name,headlines)
-            if result:
-                result["day_volume"]=volume
-                picks.append(result)
+            quotes=kite.quote(keys[i:i+batch_size])
         except Exception:
             continue
-    return sorted(picks,key=lambda x:x["score"],reverse=True)
+        for symbol,token in universe[i:i+batch_size]:
+            q=quotes.get(f"NSE:{symbol}",{})
+            price=float(q.get("last_price") or 0)
+            volume=int(q.get("volume") or 0)
+            if price>0 and volume>0:
+                rows.append((symbol,token,price,volume,price*volume))
+    return sorted(rows,key=lambda r:r[4],reverse=True)
+
+
+def score_daily_candles(candles, symbol, market, target_pct=10.0, stop_pct=5.0):
+    if not candles:
+        return None
+    frame=pd.DataFrame(candles)
+    if not {"date","open","high","low","close","volume"}.issubset(frame.columns):
+        return None
+    frame=frame.set_index("date").sort_index().rename(columns={
+        "open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"
+    })
+    if len(frame)<65:
+        return None
+    d=add_dtc_style_indicators(frame)
+    row=d.iloc[-1]
+    required=["EMA_30","EMA_35","EMA_40","EMA_45","EMA_50","EMA_60","RSI_14","RELATIVE_VOLUME","VWAP"]
+    if any(pd.isna(row.get(col)) for col in required):
+        return None
+    close=float(row["Close"])
+    momentum=(close/float(d["Close"].iloc[-6])-1)*100 if float(d["Close"].iloc[-6]) else 0
+    relvol=float(row["RELATIVE_VOLUME"])
+    rsi=float(row["RSI_14"])
+    bull=bool(row["EMA_BULL"] and close>float(row["VWAP"]) and rsi>=52 and momentum>0)
+    bear=bool(row["EMA_BEAR"] and close<float(row["VWAP"]) and rsi<=48 and momentum<0)
+    if bull:
+        signal="BUY"
+        target=close*(1+target_pct/100)
+        stop=close*(1-stop_pct/100)
+    elif bear:
+        signal="SELL"
+        target=close*(1-target_pct/100)
+        stop=close*(1+stop_pct/100)
+    else:
+        signal="WAIT"
+        target=close*(1+target_pct/100)
+        stop=close*(1-stop_pct/100)
+    score=0
+    score+=30 if bull or bear else 0
+    score+=min(25,max(0,(relvol-1)*12.5))
+    score+=min(20,abs(momentum)*3)
+    score+=10 if (52<=rsi<=75 or 25<=rsi<=48) else 0
+    score+=15 if abs(momentum)>=1 and relvol>=1.5 else 0
+    return {
+        "Market":market,"Stock":symbol,"Price":round(close,2),
+        "Signal":signal,"Trend":str(row["TREND_LABEL"]),
+        "Score":round(min(100,score),1),"RSI":round(rsi,1),
+        "Relative Volume":round(relvol,2),"Momentum %":round(momentum,2),
+        "Volume":int(row["Volume"]),"Entry":round(close,2),
+        "Target":round(target,2),"Stop Loss":round(stop,2),
+        "Candle Date":str(pd.Timestamp(d.index[-1]).date()),
+        "Data Source":"Kite historical daily candles"
+    }
+
+
+def scan_stock_universe(kite, market="FNO", max_candidates=35, target_pct=10.0, stop_pct=5.0):
+    if market not in ("FNO","EQUITY"):
+        raise ValueError("market must be FNO or EQUITY")
+    universe=_universe(kite,market)
+    turnover=_quote_turnover(kite,universe)
+    # When quote volume is absent (e.g. exchange closed), use the full instrument
+    # universe but cap historical calls deterministically.
+    if turnover:
+        candidates=turnover[:max_candidates]
+    else:
+        candidates=[(s,t,0,0,0) for s,t in universe[:max_candidates]]
+    now=datetime.now(IST)
+    start=now-timedelta(days=180)
+    picks=[]
+    for symbol,token,price,volume,value in candidates:
+        try:
+            candles=kite.historical_data(token,start,now,"day")
+            row=score_daily_candles(candles,symbol,market,target_pct,stop_pct)
+            if row:
+                row["Turnover ₹"]=int(value)
+                picks.append(row)
+        except Exception:
+            continue
+    picks.sort(key=lambda r:(r["Signal"]=="BUY",r["Score"],r["Relative Volume"]),reverse=True)
+    return pd.DataFrame(picks),{
+        "universe":len(universe),"quote_ranked":len(turnover),
+        "history_checked":len(candidates),"selected":len(picks),
+        "data_source":"Kite historical daily candles"
+    }
+
+
+# Backward-compatible wrapper for the old dashboard entry point.
+def scan_fno_stock_candidates(kite,max_stocks=25):
+    frame,_=scan_stock_universe(kite,"FNO",max_candidates=max_stocks)
+    return frame.to_dict("records")

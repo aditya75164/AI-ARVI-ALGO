@@ -583,60 +583,99 @@ with tabs[8]:
         
         **Important:** signals are research filters, not guaranteed recommendations. Verify liquidity, spread, underlying trend and risk before any paper trade.
         """)
-    st.markdown("#### Historical paper backtest")
-    st.caption("EMA 9/21 crossover on historical option candles. Entries use next candle open; conservative stop/target/trailing rules; fees, taxes, spread and slippage excluded.")
-    b1,b2,b3=st.columns(3)
-    bt_underlying=b1.selectbox("Backtest NSE F&O stock / index",paper_universe,key="bt_underlying")
-    bt_side=b2.selectbox("Backtest option",["CE","PE"],key="bt_side")
-    bt_moneyness=b3.selectbox("Backtest strike",["ATM","1 ITM","1 OTM"],key="bt_moneyness")
-    if st.button("Run historical paper backtest",key="paper_backtest"):
-        if kite is None: st.error("Kite login is required to download historical option candles.")
+    st.markdown("#### Automatic multi-stock NSE F&O backtest")
+    st.caption("This replaces the one-contract manual backtest: scan the full active NSE F&O universe, select one best CE/PE contract per unique stock, then rank stocks by their own historical option performance.")
+    st.info("Each result row represents a different underlying stock/index. The trade count is shown separately per stock; it is not a single-stock-only combined list.")
+    if st.button("RUN FULL NSE MULTI-STOCK BACKTEST",type="primary",key="paper_backtest_all_stocks"):
+        if kite is None:
+            st.error("Kite login is required to scan NSE F&O instruments and download historical candles.")
         else:
             try:
-                bt_contract=select_option_contract(kite,bt_underlying,bt_side,bt_moneyness)
-                end=datetime.now(IST); start=end-timedelta(days=30)
-                candles=kite.historical_data(bt_contract["instrument_token"],start,end,"5minute")
-                candle_frame = pd.DataFrame(candles)
-                if "date" not in candle_frame.columns or candle_frame.empty:
-                    raise RuntimeError("Kite historical candles did not include timestamps; cannot show Indian market time.")
-                candle_frame["date"] = pd.to_datetime(candle_frame["date"], errors="coerce", utc=True).dt.tz_convert("Asia/Kolkata")
-                result=backtest_ema_strategy(candle_frame,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
-                st.session_state.paper_backtest_result={"contract":bt_contract["tradingsymbol"],"result":result}
-            except Exception as exc: st.error(f"Backtest failed: {exc}")
-    bt_saved=st.session_state.get("paper_backtest_result")
-    if bt_saved:
-        result=bt_saved["result"]; st.caption(f"Contract tested: {bt_saved['contract']}")
-        aa,bb,cc,dd=st.columns(4)
-        aa.metric("Trades",result["trade_count"]); bb.metric("Win rate",f"{result['win_rate_pct']:.1f}%")
-        cc.metric("Wins / Losses",f"{result['wins']} / {result['losses']}"); dd.metric("Net points per unit",f"{result['net_points_per_unit']:.2f}")
-        if result["trades"]:
-            display_trades = pd.DataFrame(result["trades"]).copy()
-            display_trades.insert(0, "Trade", range(1, len(display_trades) + 1))
-            def _display_trade_time(value):
-                parsed = pd.to_datetime(value, errors="coerce")
-                return parsed.strftime("%d-%b-%Y %H:%M") if pd.notna(parsed) else f"Candle {value}"
-            display_trades["entry_time"] = display_trades["entry_time"].map(_display_trade_time)
-            display_trades["exit_time"] = display_trades["exit_time"].map(_display_trade_time)
-            reason_labels = {
-                "TARGET": "Target Hit",
-                "STOP_OR_TRAIL": "Stop Loss / Trailing SL",
-                "EMA_EXIT": "Strategy Exit",
-                "END_OF_DATA": "Backtest End"
-            }
-            display_trades["reason"] = display_trades["reason"].map(
-                lambda value: reason_labels.get(value, str(value).replace("_", " ").title())
+                with st.spinner("1/4 · Scanning all active NSE F&O underlyings and calculating stock indicators..."):
+                    auto_stocks,auto_stats=scan_stock_universe(kite,"FNO",None)
+                st.session_state.paper_multi_scan_stats=auto_stats
+                auto_directional=auto_stocks[auto_stocks["Signal"].isin(["BUY","SELL"])].copy() if not auto_stocks.empty else pd.DataFrame()
+                if not auto_directional.empty:
+                    auto_directional=auto_directional.sort_values(
+                        ["Score","Relative Volume","Turnover ₹"],
+                        ascending=[False,False,False]
+                    ).drop_duplicates("Stock").reset_index(drop=True)
+                auto_shortlist=auto_directional.head(30).copy()
+                with st.spinner(f"2/4 · Finding one best liquid CE/PE option for {len(auto_shortlist)} unique stocks..."):
+                    auto_options=enrich_fno_option_premiums(kite,auto_shortlist,max_stocks=30) if not auto_shortlist.empty else pd.DataFrame()
+                auto_results=[]
+                if not auto_options.empty:
+                    with st.spinner(f"3/4 · Backtesting each stock's selected option over 30 days of 5-minute candles..."):
+                        auto_master=pd.DataFrame(kite.instruments("NFO"))
+                        auto_tokens=dict(zip(auto_master["tradingsymbol"].astype(str),auto_master["instrument_token"].astype(int))) if not auto_master.empty else {}
+                        auto_end=datetime.now(IST); auto_start=auto_end-timedelta(days=30)
+                        for _,auto_option in auto_options.iterrows():
+                            auto_symbol=str(auto_option["Option Symbol"])
+                            auto_token=auto_tokens.get(auto_symbol)
+                            if not auto_token: continue
+                            try:
+                                auto_candles=pd.DataFrame(kite.historical_data(auto_token,auto_start,auto_end,"5minute"))
+                                if auto_candles.empty or "date" not in auto_candles.columns: continue
+                                auto_candles["date"]=pd.to_datetime(auto_candles["date"],errors="coerce",utc=True).dt.tz_convert("Asia/Kolkata")
+                                auto_test=backtest_ema_strategy(auto_candles,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                                if int(auto_test.get("trade_count",0))<3: continue
+                                auto_row=auto_directional.loc[auto_directional["Stock"].eq(auto_option["Stock"])]
+                                if auto_row.empty: continue
+                                auto_signal=auto_row.iloc[0]
+                                auto_trade_returns=[float(t.get("return_pct",0.0)) for t in auto_test.get("trades",[])]
+                                auto_results.append({
+                                    "Stock":str(auto_option["Stock"]),
+                                    "Option":str(auto_option["Option Side"]),
+                                    "Contract":auto_symbol,
+                                    "Premium (₹)":round(float(auto_option["Option Premium"]),2),
+                                    "Stock Signal":str(auto_signal["Signal"]),
+                                    "Stock Score":round(float(auto_signal["Score"]),2),
+                                    "RSI":round(float(auto_signal["RSI"]),2),
+                                    "Relative Volume":round(float(auto_signal["Relative Volume"]),2),
+                                    "Option OI":int(auto_option["Option OI"]),
+                                    "Option Volume":int(auto_option["Option Volume"]),
+                                    "Trades":int(auto_test["trade_count"]),
+                                    "Win Rate (%)":round(float(auto_test["win_rate_pct"]),2),
+                                    "Wins":int(auto_test["wins"]),
+                                    "Losses":int(auto_test["losses"]),
+                                    "Net Points / Unit":round(float(auto_test["net_points_per_unit"]),2),
+                                    "Net Return (%)":round(sum(auto_trade_returns),2),
+                                })
+                            except Exception:
+                                continue
+                auto_result_frame=pd.DataFrame(auto_results)
+                if not auto_result_frame.empty:
+                    auto_result_frame=auto_result_frame.sort_values(
+                        ["Net Return (%)","Net Points / Unit","Win Rate (%)"],
+                        ascending=False
+                    ).drop_duplicates("Stock").reset_index(drop=True)
+                    auto_result_frame.insert(0,"Rank",range(1,len(auto_result_frame)+1))
+                st.session_state.paper_multi_backtest=auto_result_frame
+                st.session_state.paper_multi_scan_time=datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
+            except Exception as exc:
+                st.error(f"Automatic multi-stock backtest failed: {exc}")
+    auto_saved=st.session_state.get("paper_multi_backtest")
+    auto_stats_saved=st.session_state.get("paper_multi_scan_stats")
+    if auto_stats_saved:
+        st.caption(
+            f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · "
+            f"Active F&O universe: {auto_stats_saved.get('universe',0)} · "
+            f"Daily histories checked: {auto_stats_saved.get('history_checked',0)} · "
+            f"Valid directional stocks: {auto_stats_saved.get('selected',0)} · "
+            "Detailed option tests: up to 30 unique stocks"
+        )
+    if auto_saved is not None:
+        if not auto_saved.empty:
+            st.success(f"{len(auto_saved)} different stocks passed the minimum 3-trade test. Each stock appears once, with its own selected CE/PE contract and backtest result.")
+            st.dataframe(auto_saved,use_container_width=True,hide_index=True)
+            st.download_button(
+                "Download multi-stock NSE F&O ranking",
+                auto_saved.to_csv(index=False),
+                "arvi_multi_stock_fno_backtest.csv",
+                "text/csv"
             )
-            display_trades["return_pct"] = display_trades["return_pct"].map(lambda value: f"{value:+.2f}%")
-            display_trades["pnl_per_unit"] = display_trades["pnl_per_unit"].map(lambda value: f"₹{value:+.2f}")
-            display_trades = display_trades.rename(columns={
-                "entry_time": "BUY Time",
-                "exit_time": "SELL Time",
-                "entry": "BUY Price (₹)",
-                "exit": "SELL Price (₹)",
-                "return_pct": "Return (%)",
-                "pnl_per_unit": "P&L / Unit (₹)",
-                "reason": "Exit Reason"
-            })
-            st.dataframe(display_trades, use_container_width=True, hide_index=True)
-        st.warning(result["note"])
+        else:
+            st.warning("No unique stock passed the minimum 3-trade historical test. No best-return ranking is shown; check live Kite data, option liquidity and historical candle availability.")
+    else:
+        st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST. The old one-stock selector is no longer used in this section.")
     st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

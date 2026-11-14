@@ -9,7 +9,7 @@ def make_candles(direction="up"):
         close=100+i*0.8 if direction=="up" else 180-i*0.8
         rows.append({
             "date":base+pd.Timedelta(days=i),
-            "open":close-0.2,"high":close+1,"low":close-1,
+            "open":close-0.2,"high":close+(0.5 if direction=="up" else 1.0),"low":close-(1.0 if direction=="up" else 0.5),
             "close":close,"volume":100000 if i<99 else 250000
         })
     return rows

@@ -65,7 +65,7 @@ def quote_is_usable(quote,max_age_days=4):
     else:
         age=quote_timestamp_age_seconds(stamp)
         if age is None or age>max_age_days*86400:
-            reasons.append(f"quote older than {max_age_days} days")
+            reasons.append(f"quote older than four days" if max_age_days==4 else f"quote older than {max_age_days} days")
     return not reasons,"; ".join(reasons)
 
 

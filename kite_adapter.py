@@ -156,6 +156,40 @@ def fetch_derivative_contracts(kite, exchange="NFO", underlying=None, option_sid
     return frame.sort_values(["name","expiry","strike"]).reset_index(drop=True)
 
 
+
+def quote_timestamp_age_seconds(value, now=None):
+    """Return quote age in seconds; None means provider supplied no usable timestamp."""
+    if not value:
+        return None
+    stamp=pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        stamp=stamp.tz_localize(IST)
+    else:
+        stamp=stamp.tz_convert(IST)
+    current=pd.Timestamp(now or datetime.now(IST))
+    if current.tzinfo is None:
+        current=current.tz_localize(IST)
+    else:
+        current=current.tz_convert(IST)
+    return max(0.0,(current-stamp).total_seconds())
+
+
+def validate_option_liquidity(snapshot, max_spread_pct=3.0):
+    """Strict gate: no volume/OI, two-sided depth, or reasonable spread => reject."""
+    reasons=[]
+    if snapshot.get("last_price",0)<=0: reasons.append("invalid LTP")
+    if snapshot.get("volume",0)<=0: reasons.append("zero traded volume")
+    if snapshot.get("oi",0)<=0: reasons.append("zero open interest")
+    bid=snapshot.get("bid",0); ask=snapshot.get("ask",0); ltp=snapshot.get("last_price",0)
+    if bid<=0 or ask<=0 or ask<bid: reasons.append("missing/invalid two-sided bid-ask depth")
+    spread=((ask-bid)/ltp*100) if ltp>0 and bid>0 and ask>=bid else None
+    if spread is None: reasons.append("spread unavailable")
+    elif spread>max_spread_pct: reasons.append(f"spread too wide ({spread:.2f}%)")
+    age=snapshot.get("age_seconds")
+    if age is None: reasons.append("quote timestamp unavailable")
+    elif age>4*24*60*60: reasons.append(f"quote stale ({age/3600:.1f} hours old)")
+    return {"eligible":not reasons,"reasons":reasons,"spread_pct":spread}
+
 def get_quote_snapshot(kite, exchange, tradingsymbol):
     if exchange not in ("NSE","BSE","NFO","BFO"):
         raise ValueError("Unsupported exchange")
@@ -166,6 +200,8 @@ def get_quote_snapshot(kite, exchange, tradingsymbol):
     depth=data.get("depth") or {}
     bid=(depth.get("buy") or [{}])[0].get("price") or 0
     ask=(depth.get("sell") or [{}])[0].get("price") or 0
+    timestamp=data.get("timestamp") or data.get("last_trade_time")
+    age=quote_timestamp_age_seconds(timestamp) if timestamp else None
     return {
         "key":key,
         "last_price":float(data.get("last_price") or 0),
@@ -173,5 +209,6 @@ def get_quote_snapshot(kite, exchange, tradingsymbol):
         "oi":int(data.get("oi") or 0),
         "bid":float(bid),
         "ask":float(ask),
-        "timestamp":str(data.get("timestamp") or data.get("last_trade_time") or ""),
+        "timestamp":str(timestamp or ""),
+        "age_seconds":age,
     }

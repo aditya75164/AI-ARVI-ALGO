@@ -7,10 +7,12 @@ from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_stock_universe
 from option_enrichment import enrich_fno_option_premiums
 from bot_ledger import init_db, sync_broker_history, dashboard_data
+from paper_trading import quantity_for_risk, open_paper_trade, mark_paper_trade, close_paper_trade, can_open_trade, backtest_ema_strategy
+from paper_ledger import init_paper_db, load_paper_trades, save_paper_trade, paper_summary
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
     kite_client, login_url, generate_session, persist_access_token, fetch_index_candles,
-    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
+    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist, select_option_contract, get_option_ltp, quote_timestamp_age_seconds
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
@@ -87,7 +89,7 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
+tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"],"Paper Trading"])
 with tabs[0]:
     st.subheader("Automated Trading Bot · Control Center")
     st.caption("Broker-synchronised orders, tradebook, positions and performance. This panel reports real Kite records; it does not invent fills or P&L.")
@@ -394,3 +396,117 @@ with tabs[7]:
 Signals are technical indicators, not guaranteed predictions or investment advice. The 1-second/2-second setting controls quote polling, not guaranteed exchange tick frequency. Streamlit Cloud sleep, Kite API limits, market-data entitlements and network latency can delay updates. For true tick-by-tick streaming, use KiteTicker/WebSocket on an always-on server.
 """)
 st.caption(f"{datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')} IST · Read-only market monitor · No order execution")
+
+
+with tabs[8]:
+    st.subheader("Paper Trading Control Center")
+    st.caption("Virtual option BUY/SELL only. This panel never submits orders to Zerodha. Live Kite quotes are used for paper marks when authenticated.")
+    init_paper_db()
+    paper_trades=load_paper_trades()
+    summary=paper_summary(paper_trades)
+    m1,m2,m3,m4=st.columns(4)
+    m1.metric("Open paper positions",summary["open"])
+    m2.metric("Unrealized P&L",f"₹{summary['unrealized_pnl']:,.2f}")
+    m3.metric("Realized P&L",f"₹{summary['realized_pnl']:,.2f}")
+    m4.metric("Closed trades",summary["closed"])
+    st.info("Execution mode: PAPER ONLY · No real BUY/SELL orders · One open paper position at a time.")
+    if kite is None:
+        st.warning("Kite access token is not available in this dashboard process. Complete Kite login and Verify Kite connection first.")
+    else:
+        st.markdown("#### Live market-data verification")
+        if st.button("Verify live Kite market data",key="paper_verify_market"):
+            try:
+                profile=kite.profile()
+                spot=float((kite.ltp(["NSE:NIFTY 50"]).get("NSE:NIFTY 50") or {}).get("last_price") or 0)
+                if spot<=0: raise RuntimeError("Kite returned no valid NIFTY LTP")
+                st.success(f"Authenticated as {profile.get('user_name') or profile.get('user_id')} · NIFTY LTP ₹{spot:,.2f}")
+            except Exception as exc: st.error(f"Live market-data verification failed: {exc}")
+        st.markdown("#### Open a virtual option BUY")
+        x,y,z=st.columns(3)
+        paper_underlying=x.selectbox("Underlying",["NIFTY","BANKNIFTY"],key="paper_underlying")
+        paper_side=y.selectbox("Option side",["CE","PE"],key="paper_side")
+        paper_moneyness=z.selectbox("Strike selection",["ATM","1 ITM","1 OTM"],key="paper_moneyness")
+        p1,p2,p3=st.columns(3)
+        paper_capital=p1.number_input("Virtual capital (₹)",min_value=1000.0,max_value=10000000.0,value=100000.0,step=5000.0,key="paper_capital")
+        paper_risk=p2.number_input("Risk per trade (%)",min_value=0.1,max_value=5.0,value=1.0,step=0.1,key="paper_risk")
+        paper_stop=p3.number_input("Stop loss (%)",min_value=0.5,max_value=20.0,value=5.0,step=0.5,key="paper_stop")
+        q1,q2,q3=st.columns(3)
+        paper_target=q1.number_input("Target (%)",min_value=0.5,max_value=50.0,value=10.0,step=0.5,key="paper_target")
+        paper_trailing=q2.checkbox("Enable trailing stop",value=True,key="paper_trailing")
+        paper_trail_pct=q3.number_input("Trailing distance (%)",min_value=0.2,max_value=10.0,value=1.5,step=0.1,key="paper_trail_pct")
+        if st.button("Fetch selected option & calculate paper quantity",key="paper_fetch_contract"):
+            try:
+                contract=select_option_contract(kite,paper_underlying,paper_side,paper_moneyness)
+                age=quote_timestamp_age_seconds(contract.get("quote_time")) if contract.get("quote_time") else None
+                if age is None or age>180: raise RuntimeError("Option quote timestamp missing or older than 180 seconds; paper entry blocked.")
+                quantity=quantity_for_risk(paper_capital,paper_risk,contract["option_ltp"],paper_stop,contract["lot_size"])
+                st.session_state.paper_candidate={"contract":contract,"quantity":quantity,"age":age}
+            except Exception as exc:
+                st.session_state.paper_candidate=None
+                st.error(f"Contract/quote check failed: {exc}")
+        candidate=st.session_state.get("paper_candidate")
+        if candidate:
+            contract=candidate["contract"]
+            st.dataframe(pd.DataFrame([{"Contract":contract["tradingsymbol"],"Expiry":contract["expiry"],"Strike":contract["strike"],"LTP":contract["option_ltp"],"Lot size":contract["lot_size"],"Buyer depth":contract.get("buyer_depth_qty"),"Seller depth":contract.get("seller_depth_qty"),"Quote age (sec)":round(candidate["age"],1),"Risk-sized quantity":candidate["quantity"]}]),use_container_width=True,hide_index=True)
+            allowed,reason=can_open_trade(load_paper_trades(),3,1500)
+            if not allowed: st.warning(reason)
+            if candidate["quantity"]<=0: st.warning("Risk budget is too small for one complete lot.")
+            if st.button("CONFIRM PAPER BUY",type="primary",disabled=(not allowed or candidate["quantity"]<=0),key="paper_confirm_buy"):
+                try:
+                    trade=open_paper_trade(contract,candidate["quantity"],paper_target,paper_stop,paper_trailing,paper_trail_pct)
+                    save_paper_trade(trade); st.session_state.paper_candidate=None
+                    st.success(f"Virtual BUY opened: {trade['tradingsymbol']} · Qty {trade['quantity']} · Entry ₹{trade['entry_price']:.2f}")
+                    st.rerun()
+                except Exception as exc: st.error(f"Paper entry failed: {exc}")
+    st.markdown("#### Manage paper positions")
+    paper_trades=load_paper_trades()
+    open_trades=[t for t in paper_trades if t.get("status")=="OPEN"]
+    if open_trades:
+        if kite is not None and st.button("Refresh live prices & apply SL/target/trailing stop",key="paper_refresh_prices"):
+            updated=0
+            for trade in open_trades:
+                try:
+                    changed=mark_paper_trade(trade,get_option_ltp(kite,trade["tradingsymbol"]))
+                    save_paper_trade(changed); updated+=1
+                except Exception as exc: st.warning(f"{trade['tradingsymbol']}: live mark unavailable ({exc})")
+            st.success(f"Updated {updated} paper position(s)."); st.rerun()
+        for trade in open_trades:
+            st.markdown(f"**{trade['tradingsymbol']}** · Qty {trade['quantity']} · Entry ₹{trade['entry_price']:.2f} · Last mark ₹{trade['ltp']:.2f}")
+            st.caption(f"Stop ₹{trade['stop_price']:.2f} · Target ₹{trade['target_price']:.2f} · P&L ₹{trade['pnl']:.2f}")
+            if kite is not None and st.button(f"SELL / Close paper position · {trade['tradingsymbol']}",key="paper_close_"+trade["id"]):
+                try:
+                    ltp=get_option_ltp(kite,trade["tradingsymbol"])
+                    closed=close_paper_trade(trade,ltp,"MANUAL_SELL"); save_paper_trade(closed)
+                    st.success(f"Paper SELL closed at ₹{ltp:.2f}; P&L ₹{closed['realized_pnl']:.2f}"); st.rerun()
+                except Exception as exc: st.error(f"Paper close failed: {exc}")
+    else: st.info("No open paper positions.")
+    paper_trades=load_paper_trades()
+    if paper_trades:
+        st.markdown("#### Paper trade history")
+        st.dataframe(pd.DataFrame(paper_trades),use_container_width=True,hide_index=True)
+        st.download_button("Download paper trade history CSV",pd.DataFrame(paper_trades).to_csv(index=False),"arvi_paper_trade_history.csv","text/csv")
+    st.markdown("#### Historical paper backtest")
+    st.caption("EMA 9/21 crossover on historical option candles. Entries use next candle open; conservative stop/target/trailing rules; fees, taxes, spread and slippage excluded.")
+    b1,b2,b3=st.columns(3)
+    bt_underlying=b1.selectbox("Backtest underlying",["NIFTY","BANKNIFTY"],key="bt_underlying")
+    bt_side=b2.selectbox("Backtest option",["CE","PE"],key="bt_side")
+    bt_moneyness=b3.selectbox("Backtest strike",["ATM","1 ITM","1 OTM"],key="bt_moneyness")
+    if st.button("Run historical paper backtest",key="paper_backtest"):
+        if kite is None: st.error("Kite login is required to download historical option candles.")
+        else:
+            try:
+                bt_contract=select_option_contract(kite,bt_underlying,bt_side,bt_moneyness)
+                end=datetime.now(IST); start=end-timedelta(days=30)
+                candles=kite.historical_data(bt_contract["instrument_token"],start,end,"5minute")
+                result=backtest_ema_strategy(pd.DataFrame(candles),fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                st.session_state.paper_backtest_result={"contract":bt_contract["tradingsymbol"],"result":result}
+            except Exception as exc: st.error(f"Backtest failed: {exc}")
+    bt_saved=st.session_state.get("paper_backtest_result")
+    if bt_saved:
+        result=bt_saved["result"]; st.caption(f"Contract tested: {bt_saved['contract']}")
+        aa,bb,cc,dd=st.columns(4)
+        aa.metric("Trades",result["trade_count"]); bb.metric("Win rate",f"{result['win_rate_pct']:.1f}%")
+        cc.metric("Wins / Losses",f"{result['wins']} / {result['losses']}"); dd.metric("Net points per unit",f"{result['net_points_per_unit']:.2f}")
+        if result["trades"]: st.dataframe(pd.DataFrame(result["trades"]),use_container_width=True,hide_index=True)
+        st.warning(result["note"])
+    st.caption("Paper positions are marked when you refresh the live prices. Stop/target are not exchange orders or guaranteed fills.")

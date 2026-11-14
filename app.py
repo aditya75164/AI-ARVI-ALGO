@@ -3,8 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
-from stock_selector import scan_fno_stock_candidates
-from historical_data import read_nse_bhavcopy, fetch_kite_historical
+from stock_selector import scan_stock_universe
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
@@ -72,7 +71,7 @@ with st.sidebar:
     refresh_seconds={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh]
     st.caption("Live polling uses Kite quote API. API rate limits and your market-data entitlement apply.")
     st.divider()
-    st.caption("Historical data: NSE official bhavcopy import and Kite historical candles.")
+    st.caption("Kite market data: daily historical candles for F&O and NSE equity stock selection.")
 
 kite=kite_client()
 connected=bool(st.session_state.kite_profile) and kite is not None
@@ -82,36 +81,60 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","NSE Historical Data","Indicator guide"])
+tabs=st.tabs(["F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"])
 with tabs[0]:
-    st.subheader("Top selected stock — trend + volume + global news")
-    st.caption("Shows only the highest-ranked eligible F&O stock. A 10% objective is a target reference, not a promised return.")
-    if st.button("Find strongest stock now",type="primary"):
+    st.subheader("F&O stock selection")
+    st.caption("Scans F&O-eligible stock underlyings using daily historical candles, trend, momentum and relative volume.")
+    p1,p2,p3=st.columns(3)
+    max_fno=p1.number_input("Maximum F&O stocks to analyse",10,100,35,5,key="max_fno")
+    tgt_fno=p2.number_input("Target %",1.0,30.0,10.0,1.0,key="tgt_fno")
+    sl_fno=p3.number_input("Stop loss %",1.0,15.0,5.0,0.5,key="sl_fno")
+    if st.button("Scan F&O stocks",type="primary",key="scan_fno_universe"):
         try:
-            if not connected:
-                st.error("Connect and verify Kite first.")
+            if not connected: st.error("Verify Kite connection first.")
             else:
-                with st.spinner("Scanning liquid F&O stocks, volume, momentum and global headlines..."):
-                    st.session_state.stock_picks=scan_fno_stock_candidates(kite,max_stocks=25)
-        except Exception as exc:
-            st.error(f"Stock selection failed: {exc}")
-    picks=st.session_state.get("stock_picks",[])
-    if picks:
-        best=picks[0]
-        st.success(f"Selected stock: {best['name']} ({best['symbol']})")
-        a,b,c,d=st.columns(4)
-        a.metric("Selection score",f"{best['score']}/100")
-        b.metric("Last price",f"₹{best['last_price']:,.2f}")
-        c.metric("Relative volume",f"{best['relative_volume']}x")
-        d.metric("5-candle momentum",f"{best['momentum_pct']:+.2f}%")
-        st.write(f"**Trend:** Bullish · **RSI:** {best['rsi']} · **Day volume:** {best['day_volume']:,}")
-        st.write(f"**News context:** {best['headline']}")
-        st.caption("Filters: bullish six-EMA/VWAP alignment, relative volume ≥1.5x, positive short-term momentum and RSI 55–80. Global headlines are keyword-scored when they mention the stock; missing stock-specific news is neutral. No 10% return is guaranteed.")
-    elif "stock_picks" in st.session_state:
-        st.warning("No stock currently passes all filters. No pick is better than a weak pick.")
-    else:
-        st.info("Click Find strongest stock now after verifying Kite connection.")
+                with st.spinner("Scanning F&O stock universe and daily history..."):
+                    frame,stats=scan_stock_universe(kite,"FNO",int(max_fno),tgt_fno,sl_fno)
+                st.session_state.fno_selection=frame
+                st.session_state.fno_selection_stats=stats
+        except Exception as exc: st.error(f"F&O scan failed: {exc}")
+    frame=st.session_state.get("fno_selection")
+    stats=st.session_state.get("fno_selection_stats")
+    if stats:
+        st.caption(f"F&O universe: {stats['universe']} · Quote ranked: {stats['quote_ranked']} · History checked: {stats['history_checked']} · Results: {stats['selected']}")
+    if frame is not None and not frame.empty:
+        st.dataframe(frame,use_container_width=True,hide_index=True)
+        st.download_button("Download F&O stock picks",frame.to_csv(index=False),"arvi_fno_stock_picks.csv","text/csv")
+    elif stats: st.warning("No stocks passed the available historical-data checks.")
+    else: st.info("Click Scan F&O stocks to rank the F&O underlying stocks.")
+
 with tabs[1]:
+    st.subheader("NSE equity stock selection")
+    st.caption("Scans NSE cash-equity stocks separately from the F&O universe using daily historical candles.")
+    p1,p2,p3=st.columns(3)
+    max_eq=p1.number_input("Maximum equity stocks to analyse",10,100,35,5,key="max_eq")
+    tgt_eq=p2.number_input("Target %",1.0,30.0,10.0,1.0,key="tgt_eq")
+    sl_eq=p3.number_input("Stop loss %",1.0,15.0,5.0,0.5,key="sl_eq")
+    if st.button("Scan NSE equity stocks",type="primary",key="scan_equity_universe"):
+        try:
+            if not connected: st.error("Verify Kite connection first.")
+            else:
+                with st.spinner("Scanning NSE equity universe and daily history..."):
+                    frame,stats=scan_stock_universe(kite,"EQUITY",int(max_eq),tgt_eq,sl_eq)
+                st.session_state.equity_selection=frame
+                st.session_state.equity_selection_stats=stats
+        except Exception as exc: st.error(f"Equity scan failed: {exc}")
+    frame=st.session_state.get("equity_selection")
+    stats=st.session_state.get("equity_selection_stats")
+    if stats:
+        st.caption(f"NSE equity universe: {stats['universe']} · Quote ranked: {stats['quote_ranked']} · History checked: {stats['history_checked']} · Results: {stats['selected']}")
+    if frame is not None and not frame.empty:
+        st.dataframe(frame,use_container_width=True,hide_index=True)
+        st.download_button("Download equity stock picks",frame.to_csv(index=False),"arvi_equity_stock_picks.csv","text/csv")
+    elif stats: st.warning("No stocks passed the available historical-data checks.")
+    else: st.info("Click Scan NSE equity stocks to rank cash-market stocks.")
+
+with tabs[2]:
     st.subheader("Second-by-second price & volume movement")
     x,y=st.columns([1,2])
     exchange=x.selectbox("Cash market",["NSE","BSE"])
@@ -144,7 +167,7 @@ with tabs[1]:
     else:
         st.warning("Connect and verify Kite to view live market quotes.")
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("NIFTY / BANKNIFTY trend & BUY/SELL indicator")
     u,v=st.columns(2)
     index=u.selectbox("Index",["NIFTY","BANKNIFTY"])
@@ -170,7 +193,7 @@ with tabs[2]:
         st.bar_chart(scan["data"].tail(120)[["Volume"]],height=180)
         st.dataframe(scan["data"].tail(30),use_container_width=True)
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("NSE/BSE stock F&O — one premium per stock")
     st.caption("One near-ATM contract per underlying, chosen by highest OI among nearby strikes in the nearest expiry.")
     ex=st.selectbox("Derivatives exchange",["NFO","BFO"])
@@ -215,54 +238,6 @@ with tabs[3]:
     else:
         st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
     
-with tabs[4]:
-    st.subheader("NSE Historical Data")
-    st.caption("Import official NSE bhavcopy CSV/ZIP files, or fetch historical daily candles through your verified Kite account.")
-    st.link_button("Open NSE All Reports — download official bhavcopy", "https://www.nseindia.com/all-reports")
-    uploaded=st.file_uploader("Upload NSE official CM bhavcopy (.csv or .zip)",type=["csv","zip"],key="nse_bhavcopy_upload")
-    if uploaded is not None:
-        try:
-            bhav=read_nse_bhavcopy(uploaded)
-            st.session_state.nse_bhavcopy=bhav
-            st.success(f"Imported {len(bhav):,} NSE rows from {uploaded.name}")
-        except Exception as exc:
-            st.error(f"Bhavcopy import failed: {exc}")
-    bhav=st.session_state.get("nse_bhavcopy")
-    if bhav is not None and not bhav.empty:
-        choices=sorted(bhav["SYMBOL"].dropna().unique().tolist())
-        selected=st.multiselect("Filter imported NSE symbols",choices,default=choices[:min(10,len(choices))],key="nse_bhav_symbols")
-        filtered=bhav[bhav["SYMBOL"].isin(selected)] if selected else bhav.iloc[0:0]
-        st.dataframe(filtered,use_container_width=True,hide_index=True)
-        st.download_button("Download filtered NSE history",filtered.to_csv(index=False),"nse_bhavcopy_history.csv","text/csv")
-        st.caption("Source: user-uploaded official NSE bhavcopy. This file is end-of-day data, not intraday/live market depth.")
-    st.divider()
-    st.markdown("**Fetch historical candles from Kite (NSE cash equities)**")
-    symbols_text=st.text_input("NSE equity symbols",value="RELIANCE,SBIN,INFY",key="hist_symbols")
-    d1,d2=st.columns(2)
-    hist_start=d1.date_input("From date",value=datetime.now(IST).date()-timedelta(days=90),key="hist_start")
-    hist_end=d2.date_input("To date",value=datetime.now(IST).date(),key="hist_end")
-    if st.button("Fetch historical candles",type="primary",key="fetch_kite_history"):
-        try:
-            if not connected:
-                st.error("Verify Kite connection to fetch historical candles.")
-            elif hist_start>hist_end:
-                st.error("From date must be on or before To date.")
-            else:
-                symbols=[x.strip().upper() for x in symbols_text.split(",") if x.strip()]
-                with st.spinner("Fetching NSE historical daily candles..."):
-                    history=fetch_kite_historical(kite,symbols,datetime.combine(hist_start,datetime.min.time()),datetime.combine(hist_end,datetime.max.time()),"day")
-                st.session_state.kite_historical=history
-                if history.empty:
-                    st.warning("No historical candles returned. Check symbols, dates and Kite historical-data entitlement.")
-        except Exception as exc:
-            st.error(f"Historical fetch failed: {exc}")
-    hist=st.session_state.get("kite_historical")
-    if hist is not None and not hist.empty:
-        st.dataframe(hist,use_container_width=True,hide_index=True)
-        st.download_button("Download Kite historical candles",hist.to_csv(index=False),"kite_nse_historical.csv","text/csv")
-        st.caption(f"Source: Kite historical API · {hist['SYMBOL'].nunique()} symbols · {len(hist):,} candles. This is not a direct NSE feed.")
-    st.info("NSE official bhavcopy files are available from NSE All Reports. Download the required date's CM-UDiFF Bhavcopy and upload it above. Automated scraping of NSE pages is not used.")
-
 with tabs[5]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.

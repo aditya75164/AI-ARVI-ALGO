@@ -86,17 +86,37 @@ def _universe(kite, market):
     fut["expiry"]=pd.to_datetime(fut["expiry"],errors="coerce").dt.date
     fut=fut[fut["expiry"]>=today].sort_values("expiry").drop_duplicates("name")
     token_map={str(r.tradingsymbol):int(r.instrument_token) for r in cash.itertuples()}
+    # NSE index names differ from their NFO futures underlying names.
+    index_aliases={
+        "NIFTY":"NIFTY 50",
+        "BANKNIFTY":"NIFTY BANK",
+        "FINNIFTY":"NIFTY FIN SERVICE",
+        "MIDCPNIFTY":"NIFTY MID SELECT",
+        "NIFTYNXT50":"NIFTY NEXT 50",
+    }
+    for underlying, cash_symbol in index_aliases.items():
+        if cash_symbol in token_map:
+            token_map[underlying]=token_map[cash_symbol]
     return [(str(name),token_map[str(name)]) for name in fut["name"] if str(name) in token_map]
 
 
 def _quote_turnover(kite, universe, batch_size=150):
-    keys=[f"NSE:{symbol}" for symbol,_ in universe]
+    index_aliases={
+        "NIFTY":"NIFTY 50",
+        "BANKNIFTY":"NIFTY BANK",
+        "FINNIFTY":"NIFTY FIN SERVICE",
+        "MIDCPNIFTY":"NIFTY MID SELECT",
+        "NIFTYNXT50":"NIFTY NEXT 50",
+    }
+    quote_symbols=[index_aliases.get(symbol,symbol) for symbol,_ in universe]
+    keys=[f"NSE:{symbol}" for symbol in quote_symbols]
     rows=[]
     for i in range(0,len(keys),batch_size):
         try: quotes=kite.quote(keys[i:i+batch_size])
         except Exception: continue
-        for symbol,token in universe[i:i+batch_size]:
-            q=quotes.get(f"NSE:{symbol}",{})
+        for offset,(symbol,token) in enumerate(universe[i:i+batch_size]):
+            quote_symbol=quote_symbols[i+offset]
+            q=quotes.get(f"NSE:{quote_symbol}",{})
             price=float(q.get("last_price") or 0)
             volume=int(q.get("volume") or 0)
             if price>0 and volume>0:
@@ -196,7 +216,7 @@ def scan_stock_universe(kite, market="FNO", max_candidates=35):
     now=datetime.now(IST); start=now-timedelta(days=180)
     picks=[]
     if turnover:
-        candidates=turnover[:max_candidates]
+        candidates=turnover if max_candidates is None else turnover[:max_candidates]
         for symbol,token,price,volume,value in candidates:
             try:
                 candles=kite.historical_data(token,start,now,"day")

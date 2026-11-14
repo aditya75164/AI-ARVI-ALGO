@@ -11,6 +11,7 @@ BASE={"exchange":"NFO","tradingsymbol":"NIFTY26NOV25000CE","transaction_type":"B
 
 def test_order_intent_passes_all_risk_checks_when_live_enabled(monkeypatch):
     monkeypatch.setenv("ARVI_LIVE_TRADING","YES")
+    monkeypatch.setenv("ARVI_LIVE_TRADING_APPROVED","YES")
     checked=validate_order_intent(BASE, max_risk_rupees=500, max_lots=1,
         market_now=datetime(2026,11,16,10,0,tzinfo=IST))
     assert checked["risk_rupees"]==375
@@ -19,7 +20,7 @@ def test_order_intent_passes_all_risk_checks_when_live_enabled(monkeypatch):
 
 def test_live_mode_off_blocks_entry(monkeypatch):
     monkeypatch.delenv("ARVI_LIVE_TRADING",raising=False)
-    with pytest.raises(ExecutionBlocked,match="Live trading disabled"):
+    with pytest.raises(ExecutionBlocked,match="Live trading locked"):
         validate_order_intent(BASE,500,1,datetime(2026,11,16,10,0,tzinfo=IST))
 
 
@@ -47,3 +48,11 @@ def test_risk_budget_exceeded_blocked(monkeypatch):
     monkeypatch.setenv("ARVI_LIVE_TRADING","YES")
     with pytest.raises(ExecutionBlocked,match="exceeds per-trade limit"):
         validate_order_intent(BASE,100,1,datetime(2026,11,16,10,0,tzinfo=IST))
+
+
+
+def test_live_mode_requires_second_operator_approval(monkeypatch):
+    monkeypatch.setenv("ARVI_LIVE_TRADING", "YES")
+    monkeypatch.delenv("ARVI_LIVE_TRADING_APPROVED", raising=False)
+    with pytest.raises(ExecutionBlocked, match="Live trading locked"):
+        validate_order_intent(BASE, 500, 1, datetime(2026,11,16,10,0,tzinfo=IST))

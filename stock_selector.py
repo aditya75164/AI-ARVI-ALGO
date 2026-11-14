@@ -66,8 +66,10 @@ def quote_is_usable(quote, now=None):
         current=current.tz_localize(IST)
     else:
         current=current.tz_convert(IST)
-    if (current-ts).total_seconds()>4*24*60*60:
-        return False, "quote older than four days"
+    if ts.date()!=current.date():
+        return False, "quote is not from today's session"
+    if (current-ts).total_seconds()>180:
+        return False, "quote older than 180 seconds"
     return True, "ok"
 
 def score_stock(frame, name, symbol, headlines):
@@ -87,7 +89,9 @@ def score_stock(frame, name, symbol, headlines):
     volume_pts=min(25,max(0,(relvol-1)*12.5))
     momentum_pts=min(20,max(0,momentum*4))
     rsi_pts=10 if 55<=rsi<=75 else 5 if 50<=rsi<55 else 0
-    news_pts=7.5+7.5*news
+    if not headline or headline=="No matching headline found":
+        return None
+    news_pts=15*news if news>0 else 0
     total=round(trend_pts+volume_pts+momentum_pts+rsi_pts+news_pts,1)
     if not (trend and relvol>=1.5 and momentum>0 and 55<=rsi<=80):
         return None
@@ -140,7 +144,8 @@ def scan_fno_stock_candidates(kite, max_stocks=25):
             last_bar=pd.Timestamp(frame.index[-1])
             if last_bar.tzinfo is None:
                 last_bar=last_bar.tz_localize(IST)
-            if (pd.Timestamp(now)-last_bar).total_seconds()>4*24*60*60:
+            current=pd.Timestamp(now)
+            if last_bar.date()!=current.date() or (current-last_bar).total_seconds()>15*60:
                 continue
             result=score_stock(frame,name,name,headlines)
             if result:

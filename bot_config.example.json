@@ -6,5 +6,7 @@
   "max_lots": 1,
   "max_open_positions": 1,
   "daily_loss_limit": 1500,
-  "product": "MIS"
+  "product": "MIS",
+  "execution_mode": "SIGNAL_ONLY",
+  "live_trading_approved": false
 }

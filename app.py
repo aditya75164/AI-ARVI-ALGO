@@ -202,7 +202,6 @@ with tabs[3]:
         else:
             view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
             st.dataframe(view,use_container_width=True)
-        else:
             chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
             row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
             if st.button("Monitor selected option"):

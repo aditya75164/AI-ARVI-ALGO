@@ -230,7 +230,7 @@ def scan_stock_universe(kite, market="FNO", max_candidates=35):
     else:
         # Market-closed fallback: rank by last completed daily candle turnover.
         # Scan a bounded universe, then rank by actual historical close x volume.
-        candidates=universe[:min(len(universe),max(100,max_candidates*4))]
+        candidates=universe if max_candidates is None else universe[:min(len(universe),max(100,max_candidates*4))]
         historical_rank=[]
         for symbol,token in candidates:
             try:

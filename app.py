@@ -175,43 +175,40 @@ with options_tab:
 
 with positions_tab:
     st.subheader("Paper position monitor")
-    open_positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
-    if st.button("Refresh LTP & evaluate exits", disabled=(not open_positions or kite is None)):
-        for index, trade in enumerate(st.session_state.paper_trades):
-            if trade["status"] == "OPEN":
-                try:
-                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
-                    st.session_state.paper_trades[index] = mark_paper_trade(trade, ltp)
-                except Exception as exc:
-                    st.error(f'{trade["tradingsymbol"]}: quote/exit check failed: {exc}')
-        st.rerun()
-    if open_positions:
-        for trade in open_positions:
-            st.markdown(f'**{trade["tradingsymbol"]}** · {trade["quantity"]} units · {trade["status"]}')
-            p1,p2,p3,p4 = st.columns(4)
-            p1.metric("Entry", f'₹{trade["entry_price"]:.2f}')
-            p2.metric("Last marked", f'₹{trade["ltp"]:.2f}')
-            p3.metric("Current P&L", f'₹{trade["pnl"]:,.2f}')
-            p4.metric("Stop / target", f'₹{trade["stop_price"]:.2f} / ₹{trade["target_price"]:.2f}')
-            if st.button(f'Refresh quote & manage {trade["tradingsymbol"]}', key=f'refresh_{trade["id"]}', disabled=(kite is None)):
+    @st.fragment(run_every="5s")
+    def paper_position_monitor():
+        positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
+        if positions and kite is not None:
+            for trade in positions:
                 try:
                     idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
-                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
-                    st.session_state.paper_trades[idx] = mark_paper_trade(trade, ltp)
-                    st.rerun()
+                    latest = get_option_ltp(kite, trade["tradingsymbol"])
+                    st.session_state.paper_trades[idx] = mark_paper_trade(trade, latest)
                 except Exception as exc:
-                    st.error(f"Could not refresh position: {exc}")
-            if st.button(f'Manual paper exit {trade["tradingsymbol"]}', key=f'exit_{trade["id"]}', disabled=(kite is None)):
-                try:
-                    ltp = get_option_ltp(kite, trade["tradingsymbol"])
-                    idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
-                    st.session_state.paper_trades[idx] = close_paper_trade(trade, ltp)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Paper exit failed: {exc}")
-            st.divider()
-    else:
-        st.info("No open paper positions.")
+                    st.warning(f'{trade["tradingsymbol"]}: automatic paper quote check failed: {exc}')
+        positions = [t for t in st.session_state.paper_trades if t["status"] == "OPEN"]
+        if positions:
+            for trade in positions:
+                st.markdown(f'**{trade["tradingsymbol"]}** · {trade["quantity"]} units · {trade["status"]}')
+                p1,p2,p3,p4 = st.columns(4)
+                p1.metric("Entry", f'₹{trade["entry_price"]:.2f}')
+                p2.metric("Last marked", f'₹{trade["ltp"]:.2f}')
+                p3.metric("Current P&L", f'₹{trade["pnl"]:,.2f}')
+                p4.metric("Stop / target", f'₹{trade["stop_price"]:.2f} / ₹{trade["target_price"]:.2f}')
+                if st.button(f'Manual paper exit {trade["tradingsymbol"]}', key=f'exit_{trade["id"]}', disabled=(kite is None)):
+                    try:
+                        idx = next(i for i,x in enumerate(st.session_state.paper_trades) if x["id"] == trade["id"])
+                        latest = get_option_ltp(kite, trade["tradingsymbol"])
+                        st.session_state.paper_trades[idx] = close_paper_trade(trade, latest)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Paper exit failed: {exc}")
+                st.divider()
+        else:
+            st.info("No open paper positions.")
+        if kite is None and positions:
+            st.warning("Kite disconnected: automatic paper stop/target checks cannot run.")
+    paper_position_monitor()
     if st.session_state.paper_trades:
         st.subheader("Trade history")
         history = pd.DataFrame(st.session_state.paper_trades)

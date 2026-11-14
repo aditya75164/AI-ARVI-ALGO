@@ -102,10 +102,11 @@ with tabs[0]:
     stats=st.session_state.get("fno_selection_stats")
     if stats:
         st.caption(f"F&O universe: {stats['universe']} · Quote ranked: {stats['quote_ranked']} · History checked: {stats['history_checked']} · Results: {stats['selected']}")
+        if stats.get('reason'): st.info(stats['reason'])
     if frame is not None and not frame.empty:
         st.dataframe(frame,use_container_width=True,hide_index=True)
         st.download_button("Download F&O stock picks",frame.to_csv(index=False),"arvi_fno_stock_picks.csv","text/csv")
-    elif stats: st.warning("No stocks passed the available historical-data checks.")
+    elif stats: st.warning("No stocks passed the available historical-data checks or usable quote turnover was unavailable.")
     else: st.info("Click Scan F&O stocks to rank the F&O underlying stocks.")
 
 with tabs[1]:
@@ -128,6 +129,7 @@ with tabs[1]:
     stats=st.session_state.get("equity_selection_stats")
     if stats:
         st.caption(f"NSE equity universe: {stats['universe']} · Quote ranked: {stats['quote_ranked']} · History checked: {stats['history_checked']} · Results: {stats['selected']}")
+        if stats.get('reason'): st.info(stats['reason'])
     if frame is not None and not frame.empty:
         st.dataframe(frame,use_container_width=True,hide_index=True)
         st.download_button("Download equity stock picks",frame.to_csv(index=False),"arvi_equity_stock_picks.csv","text/csv")

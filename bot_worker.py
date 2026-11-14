@@ -15,7 +15,7 @@ import pandas as pd
 from kiteconnect import KiteConnect
 from engine import add_dtc_style_indicators, build_signal
 from kite_adapter import select_option_contract, quote_timestamp_age_seconds
-from bot_ledger import init_db, record_event, dashboard_data
+from bot_ledger import init_db, record_event, dashboard_data, upsert_position, close_position
 from order_executor import place_guarded_entry, place_protective_stop, reconcile_order, cancel_order, ExecutionBlocked, live_enabled
 
 IST=ZoneInfo("Asia/Kolkata")
@@ -144,6 +144,10 @@ def run_scan_cycle(kite,cfg):
             filled=int(latest["filled_quantity"]); average=float(latest.get("average_price") or intent["entry_price"])
             intent["entry_price"]=average
             sl_id=place_protective_stop(kite,intent,filled,bot_name,order_id)
+            upsert_position({"position_key":order_id,"bot_name":bot_name,"tradingsymbol":intent["tradingsymbol"],
+                "exchange":"NFO","quantity":filled,"average_price":average,"stop_order_id":sl_id,
+                "target_price":intent["target_price"],"status":"OPEN",
+                "payload":{"entry_order_id":order_id,"stop_price":intent["stop_price"],"side":intent["side"]}})
             record_event(bot_name,"POSITION_OPEN","PROTECTED","Entry fill verified and broker-side stop submitted",
                          {"entry_order_id":order_id,"stop_order_id":sl_id,"quantity":filled,"target":intent["target_price"]})
             events.append({"bot":bot_name,"status":"OPEN_PROTECTED","order_id":order_id,"stop_order_id":sl_id})
@@ -157,6 +161,59 @@ def run_scan_cycle(kite,cfg):
     return events
 
 
+def monitor_open_positions(kite):
+    """Reconcile broker-side SLs and manage target exits from the always-on worker."""
+    data=dashboard_data()
+    outcomes=[]
+    for position in data["positions"]:
+        bot=position["bot_name"]; symbol=position["tradingsymbol"]
+        try:
+            stop_id=position.get("stop_order_id") or ""
+            if stop_id:
+                sl=reconcile_order(kite,stop_id,bot)
+                if sl.get("status")=="COMPLETE":
+                    close_position(position["position_key"])
+                    record_event(bot,"POSITION_CLOSED","STOP_FILLED","Broker confirmed protective stop fill",{"stop_order_id":stop_id})
+                    outcomes.append({"symbol":symbol,"status":"STOP_FILLED"})
+                    continue
+            key=f"{position['exchange']}:{symbol}"
+            q=kite.ltp([key]).get(key,{})
+            ltp=float(q.get("last_price") or 0)
+            if ltp<=0: continue
+            if ltp>=float(position["target_price"]):
+                # Cancel the protective stop and confirm cancellation before sending target exit.
+                if stop_id:
+                    try: cancel_order(kite,stop_id)
+                    except Exception as exc:
+                        record_event(bot,"TARGET_EXIT_BLOCKED","ERROR","Could not cancel SL before target exit",{"error":str(exc)})
+                        continue
+                    sl=reconcile_order(kite,stop_id,bot)
+                    if sl.get("status") not in ("CANCELLED","CANCELED","REJECTED"):
+                        record_event(bot,"TARGET_EXIT_BLOCKED","PENDING","SL cancellation not confirmed; target exit withheld",{"stop_status":sl.get("status")})
+                        continue
+                exit_id=kite.place_order(variety=kite.VARIETY_REGULAR,exchange=position["exchange"],
+                    tradingsymbol=symbol,transaction_type=kite.TRANSACTION_TYPE_SELL,
+                    quantity=int(position["quantity"]),product=kite.PRODUCT_MIS,
+                    order_type=kite.ORDER_TYPE_MARKET,validity=kite.VALIDITY_DAY,
+                    tag=("ARVITGT"+str(position["position_key"]))[:20])
+                time.sleep(2)
+                exit_order=reconcile_order(kite,exit_id,bot)
+                if exit_order.get("status")=="COMPLETE":
+                    close_position(position["position_key"])
+                    record_event(bot,"POSITION_CLOSED","TARGET_FILLED","Broker confirmed target exit fill",
+                                 {"exit_order_id":str(exit_id),"average_price":exit_order.get("average_price")})
+                    outcomes.append({"symbol":symbol,"status":"TARGET_FILLED"})
+                else:
+                    record_event(bot,"TARGET_EXIT_PENDING",exit_order.get("status","UNKNOWN"),
+                                 "Target exit submitted; worker will reconcile on next cycle",{"exit_order_id":str(exit_id)})
+                    outcomes.append({"symbol":symbol,"status":"TARGET_EXIT_PENDING"})
+        except Exception as exc:
+            LOG.exception("Position monitor failed for %s",symbol)
+            record_event(bot,"POSITION_MONITOR_ERROR","ERROR",str(exc))
+            outcomes.append({"symbol":symbol,"status":"ERROR","reason":str(exc)})
+    return outcomes
+
+
 def main():
     signal.signal(signal.SIGTERM,_stop); signal.signal(signal.SIGINT,_stop)
     cfg=load_config(); kite=create_kite()
@@ -165,8 +222,9 @@ def main():
         now=datetime.now(IST)
         if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20":
             try:
+                exits=monitor_open_positions(kite) if live_enabled() else []
                 result=run_scan_cycle(kite,cfg)
-                LOG.info("Cycle result: %s",result)
+                LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
             except Exception:
                 LOG.exception("Worker cycle failed")
         time.sleep(max(10,int(cfg["poll_seconds"])))

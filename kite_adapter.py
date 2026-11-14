@@ -174,7 +174,7 @@ def quote_timestamp_age_seconds(value, now=None):
     return max(0.0,(current-stamp).total_seconds())
 
 
-def validate_option_liquidity(snapshot, max_spread_pct=3.0):
+def validate_option_liquidity(snapshot, max_spread_pct=3.0, max_age_seconds=180):
     """Strict gate: no volume/OI, two-sided depth, or reasonable spread => reject."""
     reasons=[]
     if snapshot.get("last_price",0)<=0: reasons.append("invalid LTP")
@@ -187,7 +187,7 @@ def validate_option_liquidity(snapshot, max_spread_pct=3.0):
     elif spread>max_spread_pct: reasons.append(f"spread too wide ({spread:.2f}%)")
     age=snapshot.get("age_seconds")
     if age is None: reasons.append("quote timestamp unavailable")
-    elif age>180: reasons.append(f"quote stale ({age:.0f} seconds old)")
+    elif age>max_age_seconds: reasons.append(f"quote stale ({age:.0f} seconds old)")
     return {"eligible":not reasons,"reasons":reasons,"spread_pct":spread}
 
 def get_quote_snapshot(kite, exchange, tradingsymbol):
@@ -221,8 +221,9 @@ def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_second
     if exchange not in ('NFO','BFO'):
         raise ValueError('Unsupported derivatives exchange')
     now=datetime.now(IST)
-    if now.weekday()>=5 or now.strftime('%H:%M')<'09:15' or now.strftime('%H:%M')>'15:30':
-        return pd.DataFrame(), {'checked':0,'eligible':0,'rejected':len(contracts),'reason':'Market is closed; no live contracts are selectable'}
+    market_open = now.weekday()<5 and '09:15'<=now.strftime('%H:%M')<='15:30'
+    # When closed, show last-session reference data (up to 4 days old), clearly labelled.
+    max_age = max_age_seconds if market_open else 4*24*60*60
     eligible=[]; rejected=0
     symbols=contracts['tradingsymbol'].astype(str).tolist()
     for start in range(0,len(symbols),batch_size):
@@ -240,15 +241,18 @@ def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_second
             if not stamp or ltp<=0 or volume<=0 or oi<=0 or bid<=0 or ask<=0 or ask<bid:
                 rejected+=1; continue
             age=quote_timestamp_age_seconds(stamp,now)
-            if age is None or age>max_age_seconds or pd.Timestamp(stamp).date()!=now.date():
+            quote_date=pd.Timestamp(stamp).date()
+            if age is None or age>max_age:
+                rejected+=1; continue
+            if market_open and quote_date!=now.date():
                 rejected+=1; continue
             spread=(ask-bid)/ltp*100
             if spread>max_spread_pct:
                 rejected+=1; continue
             row=contracts[contracts['tradingsymbol'].astype(str)==symbol].iloc[0].to_dict()
-            row.update({'last_price':ltp,'volume':volume,'oi':oi,'bid':bid,'ask':ask,'spread_pct':round(spread,2),'quote_time':str(stamp),'quote_age_seconds':round(age,1)})
+            row.update({'last_price':ltp,'volume':volume,'oi':oi,'bid':bid,'ask':ask,'spread_pct':round(spread,2),'quote_time':str(stamp),'quote_age_seconds':round(age,1),'quote_status':'LIVE' if market_open else 'LAST SESSION'})
             eligible.append(row)
     result=pd.DataFrame(eligible)
     if not result.empty:
         result=result.sort_values(['volume','oi'],ascending=False).reset_index(drop=True)
-    return result, {'checked':len(symbols),'eligible':len(result),'rejected':rejected,'reason':'Live liquidity filters applied'}
+    return result, {'checked':len(symbols),'eligible':len(result),'rejected':rejected,'reason':'Live liquidity filters applied' if market_open else 'Last working session data'}

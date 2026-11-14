@@ -462,24 +462,38 @@ with tabs[8]:
     paper_trades=load_paper_trades()
     open_trades=[t for t in paper_trades if t.get("status")=="OPEN"]
     if open_trades:
-        if kite is not None and st.button("Refresh live prices & apply SL/target/trailing stop",key="paper_refresh_prices"):
-            updated=0
-            for trade in open_trades:
-                try:
-                    changed=mark_paper_trade(trade,get_option_ltp(kite,trade["tradingsymbol"]))
-                    save_paper_trade(changed); updated+=1
-                except Exception as exc: st.warning(f"{trade['tradingsymbol']}: live mark unavailable ({exc})")
-            st.success(f"Updated {updated} paper position(s)."); st.rerun()
-        for trade in open_trades:
-            st.markdown(f"**{trade['tradingsymbol']}** · Qty {trade['quantity']} · Entry ₹{trade['entry_price']:.2f} · Last mark ₹{trade['ltp']:.2f}")
-            st.caption(f"Stop ₹{trade['stop_price']:.2f} · Target ₹{trade['target_price']:.2f} · P&L ₹{trade['pnl']:.2f}")
-            if kite is not None and st.button(f"SELL / Close paper position · {trade['tradingsymbol']}",key="paper_close_"+trade["id"]):
-                try:
-                    ltp=get_option_ltp(kite,trade["tradingsymbol"])
-                    closed=close_paper_trade(trade,ltp,"MANUAL_SELL"); save_paper_trade(closed)
-                    st.success(f"Paper SELL closed at ₹{ltp:.2f}; P&L ₹{closed['realized_pnl']:.2f}"); st.rerun()
-                except Exception as exc: st.error(f"Paper close failed: {exc}")
-    else: st.info("No open paper positions.")
+        if kite is None:
+            st.warning("Connect Kite to update live marks. Paper positions remain stored in the local database.")
+        else:
+            st.caption("Live paper monitor refreshes every 5 seconds while this tab is open. SL/target/trailing checks use latest Kite LTP; simulated exits are not guaranteed exchange fills.")
+        @st.fragment(run_every=5 if (kite is not None and open_trades) else None)
+        def paper_position_monitor():
+            current=load_paper_trades()
+            active=[t for t in current if t.get("status")=="OPEN"]
+            for trade in active:
+                if kite is not None:
+                    try:
+                        live_price=get_option_ltp(kite,trade["tradingsymbol"])
+                        marked=mark_paper_trade(trade,live_price)
+                        if marked != trade:
+                            save_paper_trade(marked)
+                            trade=marked
+                    except Exception as exc:
+                        st.warning(f"{trade['tradingsymbol']}: live mark unavailable ({exc})")
+                st.markdown(f"**{trade['tradingsymbol']}** · Qty {trade['quantity']} · Entry ₹{trade['entry_price']:.2f} · LTP ₹{trade['ltp']:.2f}")
+                st.caption(f"Stop ₹{trade['stop_price']:.2f} · Target ₹{trade['target_price']:.2f} · P&L ₹{trade['pnl']:.2f} · {trade['status']}")
+                if kite is not None and trade.get("status")=="OPEN" and st.button(f"SELL / Close paper position · {trade['tradingsymbol']}",key="paper_close_"+trade["id"]):
+                    try:
+                        exit_ltp=get_option_ltp(kite,trade["tradingsymbol"])
+                        closed=close_paper_trade(trade,exit_ltp,"MANUAL_SELL")
+                        save_paper_trade(closed)
+                        st.success(f"Paper SELL closed at ₹{exit_ltp:.2f}; P&L ₹{closed['realized_pnl']:.2f}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Paper close failed: {exc}")
+        paper_position_monitor()
+    else:
+        st.info("No open paper positions.")
     paper_trades=load_paper_trades()
     if paper_trades:
         st.markdown("#### Paper trade history")

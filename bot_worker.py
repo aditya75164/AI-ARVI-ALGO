@@ -81,6 +81,13 @@ def build_option_intent(kite,symbol,signal,max_risk_per_trade,max_lots):
     age=quote_timestamp_age_seconds(stamp,now) if stamp else None
     if age is None or age>5: raise ExecutionBlocked("Option quote timestamp missing or older than 5 seconds")
     if contract["volume"]<=0 or contract["oi"]<=0: raise ExecutionBlocked("Option has no volume or open interest")
+    buyer_qty=int(contract.get("buyer_depth_qty") or 0)
+    seller_qty=int(contract.get("seller_depth_qty") or 0)
+    depth_ratio=contract.get("buyer_seller_depth_ratio")
+    if seller_qty<=0 or depth_ratio is None:
+        raise ExecutionBlocked("Buyer/seller order-book depth is unavailable")
+    if float(depth_ratio)<2.0:
+        raise ExecutionBlocked(f"Buyer depth is below the required 2:1 ratio ({buyer_qty}:{seller_qty})")
     bid=contract["best_bid"]; ask=contract["best_ask"]; premium=contract["option_ltp"]
     if bid<=0 or ask<=0 or ask<bid: raise ExecutionBlocked("Two-sided option depth unavailable")
     spread=(ask-bid)/premium*100
@@ -108,6 +115,8 @@ def build_option_intent(kite,symbol,signal,max_risk_per_trade,max_lots):
         "target_price":target,"quote_age_seconds":age,"tick_size":tick,
         "expiry":contract["expiry"],"strike":contract["strike"],"side":side,
         "underlying":symbol,"option_atr":atr,"spread_pct":spread,
+        "buyer_depth_qty":buyer_qty,"seller_depth_qty":seller_qty,
+        "buyer_seller_depth_ratio":round(float(depth_ratio),2),
         "risk_rupees":round((entry-stop)*qty,2)
     }
 

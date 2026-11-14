@@ -185,25 +185,45 @@ with tabs[3]:
     contracts=st.session_state.get("derivative_list")
     stats=st.session_state.get('derivative_stats')
     if stats:
-        st.caption(f"Checked {stats['checked']} contracts · Eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
-        if stats['reason']=='Last working session data':
-            st.info('LATEST COMPLETED SESSION DATA · Showing the most recent available trading-session quotes as reference values.')
+        if stats['reason']=='Market closed - reference universe only':
+            st.caption(f"F&O underlyings: {stats['underlyings']} · Option contract rows: {stats['total_contracts']} · Live eligible: 0 (market closed)")
+            st.info("MARKET CLOSED · Counts are instruments, not stock picks. Select a contract to load its last completed-session historical candle. No live bid/ask is available while the exchange is closed.")
+        else:
+            st.caption(f"Unique F&O underlyings: {stats['underlyings']} · Contracts checked: {stats['checked']} · Live eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
     if contracts is not None and not contracts.empty:
         view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange"]]
         st.dataframe(view,use_container_width=True)
         chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
         row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
         if st.button("Monitor selected option"):
-            st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen}
+            st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen,"instrument_token":int(row["instrument_token"])}
         sel=st.session_state.selected_derivative
         if sel and sel["tradingsymbol"]==chosen:
             @st.fragment(run_every=refresh_seconds)
             def option_monitor():
                 try:
-                    q=get_quote_snapshot(kite,ex,chosen)
                     now_ist=datetime.now(IST)
                     market_open=now_ist.weekday()<5 and '09:15'<=now_ist.strftime('%H:%M')<='15:30'
-                    check=validate_option_liquidity(q,max_age_seconds=180 if market_open else 4*24*60*60)
+                    if not market_open:
+                        token=int(sel["instrument_token"])
+                        candles=kite.historical_data(token,now_ist-timedelta(days=7),now_ist,"day")
+                        if not candles:
+                            st.warning("No previous-session historical candle is available for this contract.")
+                            return
+                        last=candles[-1]
+                        candle_date=pd.Timestamp(last["date"]).strftime("%d-%b-%Y")
+                        st.info(f"LAST COMPLETED SESSION · {candle_date} · Historical reference only")
+                        st.metric(f"{chosen} previous close",f"₹{float(last['close']):,.2f}")
+                        hcols=st.columns(3)
+                        hcols[0].metric("Session volume",f"{int(last.get('volume') or 0):,}")
+                        hcols[1].metric("Session high",f"₹{float(last.get('high') or 0):,.2f}")
+                        hcols[2].metric("Session low",f"₹{float(last.get('low') or 0):,.2f}")
+                        if last.get("oi") is not None:
+                            st.metric("End-of-session OI",f"{int(last.get('oi') or 0):,}")
+                        st.caption("Historical candles do not contain live bid/ask depth. This is not a live quote or an executable liquidity check.")
+                        return
+                    q=get_quote_snapshot(kite,ex,chosen)
+                    check=validate_option_liquidity(q,max_age_seconds=180)
                     if not check["eligible"]:
                         st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
                         a,b,c=st.columns(3)
@@ -222,7 +242,7 @@ with tabs[3]:
                 except Exception as exc: st.error(f"Option quote failed: {exc}")
             option_monitor()
     elif contracts is not None and contracts.empty:
-        st.warning('NO ELIGIBLE CONTRACTS FOUND in the last available session. Zero volume/OI, missing depth, stale quotes and wide spreads remain excluded.')
+        st.warning('No contracts passed the live liquidity checks. This is separate from the total number of F&O stocks/option contracts.')
     else:
         st.caption('Load eligible contracts. During market hours the list uses live quotes; when closed it uses the most recent working-session quotes as reference data.')
 

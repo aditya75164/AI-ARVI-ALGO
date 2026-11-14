@@ -99,3 +99,64 @@ def can_open_trade(trades, max_trades, daily_loss_limit):
     if any(t.get("status") == "OPEN" for t in trades):
         return False, "An open paper position already exists. Manage it before opening another."
     return True, "Risk checks passed."
+
+
+def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0, trailing_pct=1.0):
+    """Long-premium EMA cross backtest on historical option candles.
+    Signal is evaluated at candle close; entry/exit fill is next candle open.
+    No brokerage, taxes, slippage or latency are included.
+    """
+    import pandas as pd
+    if candles is None or len(candles) < max(slow + 2, 30):
+        raise ValueError("At least 30 historical candles are required")
+    frame = candles.copy()
+    frame.columns = [str(x).lower() for x in frame.columns]
+    required = {"open", "high", "low", "close"}
+    if not required.issubset(frame.columns):
+        raise ValueError("Historical candles must include open/high/low/close")
+    frame["ema_fast"] = frame["close"].ewm(span=int(fast), adjust=False).mean()
+    frame["ema_slow"] = frame["close"].ewm(span=int(slow), adjust=False).mean()
+    frame["cross_up"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
+    trades=[]
+    position=None
+    for i in range(1,len(frame)-1):
+        row=frame.iloc[i]
+        nxt=frame.iloc[i+1]
+        if position is None and bool(row["cross_up"]):
+            entry=float(nxt["open"])
+            if entry>0:
+                position={"entry":entry,"entry_index":i+1,"stop":entry*(1-stop_pct/100),
+                          "target":entry*(1+target_pct/100),"peak":entry}
+            continue
+        if position is not None:
+            high=float(row["high"]); low=float(row["low"])
+            position["peak"]=max(position["peak"],high)
+            position["stop"]=max(position["stop"],position["peak"]*(1-trailing_pct/100))
+            exit_price=None; reason=None
+            # Conservative same-candle rule: if stop and target both touched, assume stop first.
+            if low <= position["stop"]:
+                exit_price=position["stop"]; reason="STOP_OR_TRAIL"
+            elif high >= position["target"]:
+                exit_price=position["target"]; reason="TARGET"
+            elif not bool(row["ema_fast"] > row["ema_slow"]):
+                exit_price=float(nxt["open"]); reason="EMA_EXIT"
+            if exit_price is not None and exit_price>0:
+                pnl=exit_price-position["entry"]
+                trades.append({"entry_time":str(frame.index[position["entry_index"]]),
+                               "exit_time":str(frame.index[i]),"entry":position["entry"],
+                               "exit":exit_price,"return_pct":pnl/position["entry"]*100,
+                               "pnl_per_unit":pnl,"reason":reason})
+                position=None
+    if position is not None:
+        last=float(frame.iloc[-1]["close"])
+        pnl=last-position["entry"]
+        trades.append({"entry_time":str(frame.index[position["entry_index"]]),
+                       "exit_time":str(frame.index[-1]),"entry":position["entry"],
+                       "exit":last,"return_pct":pnl/position["entry"]*100,
+                       "pnl_per_unit":pnl,"reason":"END_OF_DATA"})
+    wins=sum(t["pnl_per_unit"]>0 for t in trades)
+    net=sum(t["pnl_per_unit"] for t in trades)
+    return {"trades":trades,"trade_count":len(trades),"wins":wins,
+            "losses":len(trades)-wins,"win_rate_pct":(wins/len(trades)*100 if trades else 0),
+            "net_points_per_unit":net,
+            "note":"Historical option-premium simulation only; excludes brokerage, taxes, slippage, bid-ask spread and execution delay."}

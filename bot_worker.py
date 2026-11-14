@@ -58,8 +58,20 @@ def live_authorized(cfg):
 
 
 def create_kite():
+    # Refresh the local, git-ignored .env on every retry so a token created by
+    # the dashboard after worker startup becomes visible to this process.
+    env_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),".env")
+    if os.path.isfile(env_path):
+        with open(env_path,encoding="utf-8") as env_file:
+            for line in env_file:
+                item=line.strip()
+                if not item or item.startswith("#") or "=" not in item: continue
+                name,value=item.split("=",1)
+                name=name.strip(); value=value.strip().strip('"').strip("'")
+                if name in ("KITE_API_KEY","KITE_ACCESS_TOKEN") and value:
+                    os.environ[name]=value
     key=os.getenv("KITE_API_KEY"); token=os.getenv("KITE_ACCESS_TOKEN")
-    if not key or not token: raise RuntimeError("KITE_API_KEY and KITE_ACCESS_TOKEN must be configured in worker environment")
+    if not key or not token: raise RuntimeError("KITE_API_KEY and KITE_ACCESS_TOKEN must be configured in local .env")
     kite=KiteConnect(api_key=key); kite.set_access_token(token); kite.profile()
     return kite
 

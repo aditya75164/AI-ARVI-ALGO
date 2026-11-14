@@ -78,14 +78,22 @@ def enrich_fno_option_premiums(kite,stocks,max_stocks=35,batch_size=150):
     opts=opts[opts["name"].astype(str).isin(names)]
     if opts.empty:
         return pd.DataFrame()
-    spot_keys=[f"NSE:{name}" for name in names]
+    index_aliases={
+        "NIFTY":"NIFTY 50",
+        "BANKNIFTY":"NIFTY BANK",
+        "FINNIFTY":"NIFTY FIN SERVICE",
+        "MIDCPNIFTY":"NIFTY MID SELECT",
+        "NIFTYNXT50":"NIFTY NEXT 50",
+    }
+    quote_names={name:index_aliases.get(name,name) for name in names}
+    spot_keys=[f"NSE:{quote_names[name]}" for name in names]
     spots={}
     for i in range(0,len(spot_keys),batch_size):
         try: spots.update(kite.ltp(spot_keys[i:i+batch_size]))
         except Exception: pass
     candidates=[]
     for name in names:
-        spot=float((spots.get(f"NSE:{name}") or {}).get("last_price") or 0)
+        spot=float((spots.get(f"NSE:{quote_names[name]}") or {}).get("last_price") or 0)
         if spot<=0: continue
         rows=opts[opts["name"].astype(str).eq(name)]
         if rows.empty: continue

@@ -42,7 +42,19 @@ def load_config(path=None):
     cfg.setdefault("max_open_positions",1)
     cfg.setdefault("daily_loss_limit",1500)
     cfg.setdefault("product","MIS")
+    # Safe defaults: the worker can scan and log candidates, never send orders.
+    cfg.setdefault("execution_mode", "SIGNAL_ONLY")
+    cfg.setdefault("live_trading_approved", False)
     return cfg
+
+
+def live_authorized(cfg):
+    """Require both environment keys and an explicitly reviewed config."""
+    return (
+        live_enabled()
+        and cfg.get("execution_mode") == "AUTO"
+        and cfg.get("live_trading_approved") is True
+    )
 
 
 def create_kite():
@@ -147,7 +159,7 @@ def run_scan_cycle(kite,cfg):
             if any(o["bot_name"]==bot_name and o["status"] in ("OPEN","PENDING","TRIGGER PENDING","AMO REQ RECEIVED") for o in fresh["orders"]):
                 events.append({"bot":bot_name,"status":"ORDER_PENDING"}); continue
             intent=build_option_intent(kite,symbol,result,float(cfg["max_risk_per_trade"]),int(cfg["max_lots"]))
-            if not live_enabled():
+            if not live_authorized(cfg):
                 record_event(bot_name,"TRADE_CANDIDATE","READY","Live trading disabled; candidate not sent to broker",intent)
                 events.append({"bot":bot_name,"status":"CANDIDATE_ONLY","symbol":intent["tradingsymbol"],"entry":intent["entry_price"],"sl":intent["stop_price"],"target":intent["target_price"],"risk":intent["risk_rupees"]})
                 continue
@@ -212,6 +224,12 @@ def monitor_open_positions(kite):
             quote_age=quote_timestamp_age_seconds(quote_time) if quote_time else None
             if ltp<=0 or quote_age is None or quote_age>5: continue
             if ltp>=float(position["target_price"]):
+                if not live_enabled():
+                    record_event(bot,"TARGET_EXIT_HELD","BLOCKED",
+                                 "Target reached but live execution approval is OFF; operator review required",
+                                 {"ltp":ltp,"target":position["target_price"]})
+                    outcomes.append({"symbol":symbol,"status":"TARGET_EXIT_HELD_LIVE_LOCKED"})
+                    continue
                 # Reconcile any previously submitted target market order before retrying.
                 current=dashboard_data()
                 pending_exit=next((o for o in current["orders"] if o["bot_name"]==bot and
@@ -290,11 +308,11 @@ def main():
         return
     recovery=reconcile_startup_state(kite)
     update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker connected; startup reconciliation complete",
-        {"symbols":cfg["symbols"],"live_enabled":live_enabled(),
+        {"symbols":cfg["symbols"],"live_enabled":live_authorized(cfg),
          "safe_for_new_entries":recovery["safe_for_new_entries"],
          "unmanaged_positions":len(recovery["unmanaged_positions"])})
     LOG.info("ARVI worker started; live execution=%s; startup safe=%s; symbols=%s",
-             live_enabled(),recovery["safe_for_new_entries"],cfg["symbols"])
+             live_authorized(cfg),recovery["safe_for_new_entries"],cfg["symbols"])
     while not STOP:
         now=datetime.now(IST)
         if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20" and recovery["safe_for_new_entries"]:
@@ -302,7 +320,7 @@ def main():
                 # Always manage already-open positions, even if the new-entry switch is OFF.
                 exits=monitor_open_positions(kite)
                 result=run_scan_cycle(kite,cfg)
-                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_enabled(),"safe_for_new_entries":recovery["safe_for_new_entries"]})
+                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_authorized(cfg),"safe_for_new_entries":recovery["safe_for_new_entries"]})
                 LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
             except Exception as exc:
                 update_worker_heartbeat("INDEX_OPTIONS","ERROR",str(exc))

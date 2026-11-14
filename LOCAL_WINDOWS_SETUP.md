@@ -30,7 +30,9 @@ This setup runs on your own PC. No VPS, Docker or public server is required.
 - \`ARVI_LIVE_TRADING=NO\` is forced by the launcher.
 - This launcher starts the current Streamlit market dashboard only. It does not start unattended broker-order workers.
 - The repository contains a paper-trade calculation engine in \`paper_trading.py\`; this is not the same as a fully integrated, broker-fed paper-trading screen. Do not treat a displayed signal as a simulated fill.
-- No real order is placed by this local launcher. Live execution must remain disabled.
+- No real order is placed by this local launcher. It does not start `bot_worker.py` or `stock_fno_worker.py`.
+- The index-options worker additionally requires `execution_mode: "AUTO"` and `live_trading_approved: true` in its config, as well as both environment approvals set to `YES`. These remain OFF until you review and explicitly approve the configuration.
+- Current automatic order execution is for NIFTY/BANKNIFTY index options only. The stock F&O scanner currently generates signals; it does not place stock F&O orders.
 
 ## Kite login
 Kite access tokens are time-limited and need renewal according to Zerodha's login flow. Never paste API secrets, access tokens, or request tokens into GitHub or public chats. Store them only in your local \`.env\` file.

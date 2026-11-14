@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
@@ -191,7 +191,7 @@ with tabs[3]:
         else:
             st.caption(f"Unique F&O underlyings: {stats['underlyings']} · Contracts checked: {stats['checked']} · Live eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
     if contracts is not None and not contracts.empty:
-        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange"]]
+        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange","quote_status"]]
         st.dataframe(view,use_container_width=True)
         chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
         row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]

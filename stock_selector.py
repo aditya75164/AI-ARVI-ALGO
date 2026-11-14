@@ -251,9 +251,12 @@ def scan_stock_universe(kite, market="FNO", max_candidates=35):
                 picks.append(row)
         ranked=len(historical_rank); checked=len(candidates); source="Kite last-session historical candles"
     picks.sort(key=lambda r:(r["Signal"]=="BUY",r["Score"],r["Relative Volume"]),reverse=True)
+    directional_count=sum(1 for item in picks if item.get("Signal") in ("BUY","SELL"))
+    wait_count=len(picks)-directional_count
     return pd.DataFrame(picks),{
         "universe":len(universe),"quote_ranked":ranked,
         "history_checked":checked,"selected":len(picks),
+        "directional":directional_count,"wait":wait_count,
         "data_source":source,
         "reason":None if picks else "No instruments had sufficient historical OHLCV data and valid indicator levels"
     }

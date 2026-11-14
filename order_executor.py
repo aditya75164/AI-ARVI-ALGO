@@ -20,7 +20,11 @@ class ExecutionBlocked(RuntimeError):
 
 
 def live_enabled():
-    return os.getenv("ARVI_LIVE_TRADING","").strip().upper()=="YES"
+    """Two-key live switch; both values must be explicitly set by the operator."""
+    return (
+        os.getenv("ARVI_LIVE_TRADING", "").strip().upper() == "YES"
+        and os.getenv("ARVI_LIVE_TRADING_APPROVED", "").strip().upper() == "YES"
+    )
 
 
 def validate_order_intent(intent, max_risk_rupees, max_lots=1, market_now=None):
@@ -42,7 +46,10 @@ def validate_order_intent(intent, max_risk_rupees, max_lots=1, market_now=None):
     now=market_now or datetime.now(IST)
     if now.weekday()>=5 or not ("09:20"<=now.strftime("%H:%M")<="15:20"):
         raise ExecutionBlocked("Entry window is closed")
-    if not live_enabled(): raise ExecutionBlocked("Live trading disabled: set ARVI_LIVE_TRADING=YES in the worker environment")
+    if not live_enabled(): raise ExecutionBlocked(
+            "Live trading locked: ARVI_LIVE_TRADING=YES and "
+            "ARVI_LIVE_TRADING_APPROVED=YES are both required after configuration review"
+        )
     return {"risk_rupees":round(risk,2),"quantity":qty}
 
 

@@ -149,7 +149,7 @@ def enrich_fno_option_premiums(kite,stocks,max_stocks=35,batch_size=150):
     frame=pd.DataFrame(picks)
     # Per stock: insist on stronger bid quantity than ask quantity; prefer low theta,
     # then stronger buyer pressure and OI, without pretending this is a live BUY order.
-    frame=frame[frame["Buyer Pressure"]>1.0]
+    frame=frame[frame["Buyer Pressure"]>=1.2]
     if frame.empty: return frame
     frame=frame.sort_values(["Stock","Option Theta / Day","Buyer Pressure","Option OI"],
                             ascending=[True,False,False,False])

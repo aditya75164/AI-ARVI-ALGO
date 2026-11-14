@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
-from nse_data_provider import nse_feed_configured, fetch_nse_quotes
+from historical_data import read_nse_bhavcopy, fetch_kite_historical
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
     fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts, build_stock_option_watchlist
@@ -72,9 +72,7 @@ with st.sidebar:
     refresh_seconds={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh]
     st.caption("Live polling uses Kite quote API. API rate limits and your market-data entitlement apply.")
     st.divider()
-    st.subheader("NSE licensed data feed")
-    st.write("Configured" if nse_feed_configured() else "Not configured")
-    st.caption("Requires NSE subscription or authorized vendor API credentials; no website scraping.")
+    st.caption("Historical data: NSE official bhavcopy import and Kite historical candles.")
 
 kite=kite_client()
 connected=bool(st.session_state.kite_profile) and kite is not None
@@ -84,7 +82,7 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","NSE data feed","Indicator guide"])
+tabs=st.tabs(["Selected stock pick","Live market monitor","Index signals","Stock F&O options watch","NSE Historical Data","Indicator guide"])
 with tabs[0]:
     st.subheader("Top selected stock — trend + volume + global news")
     st.caption("Shows only the highest-ranked eligible F&O stock. A 10% objective is a target reference, not a promised return.")
@@ -218,26 +216,53 @@ with tabs[3]:
         st.info("Choose CE/PE and scan. The table will show one selected premium per underlying, with strike, entry, target, stop loss and signal.")
     
 with tabs[4]:
-    st.subheader("NSE licensed market data")
-    st.caption("Independent source connector. Configure an authorized NSE Data subscription or vendor's documented JSON API.")
-    symbols=st.text_input("NSE symbols (comma separated)",value="RELIANCE,SBIN,INFY")
-    if st.button("Fetch NSE data",type="primary"):
+    st.subheader("NSE Historical Data")
+    st.caption("Import official NSE bhavcopy CSV/ZIP files, or fetch historical daily candles through your verified Kite account.")
+    uploaded=st.file_uploader("Upload NSE official CM bhavcopy (.csv or .zip)",type=["csv","zip"],key="nse_bhavcopy_upload")
+    if uploaded is not None:
         try:
-            rows=fetch_nse_quotes([s.strip() for s in symbols.split(",") if s.strip()])
-            st.session_state.nse_quotes=rows
+            bhav=read_nse_bhavcopy(uploaded)
+            st.session_state.nse_bhavcopy=bhav
+            st.success(f"Imported {len(bhav):,} NSE rows from {uploaded.name}")
         except Exception as exc:
-            st.error(str(exc))
-    nse_rows=st.session_state.get("nse_quotes")
-    if nse_rows is not None:
-        if nse_rows.empty:
-            st.warning("No NSE rows returned for the requested symbols.")
-        else:
-            st.dataframe(nse_rows,use_container_width=True,hide_index=True)
-            st.caption("Source: configured licensed NSE/vendor endpoint. Verify subscription permissions and quote timestamps before using signals.")
-    else:
-        st.info("Add NSE_DATA_API_URL and NSE_DATA_API_TOKEN in Streamlit Cloud Secrets. See README for the expected normalized response fields.")
+            st.error(f"Bhavcopy import failed: {exc}")
+    bhav=st.session_state.get("nse_bhavcopy")
+    if bhav is not None and not bhav.empty:
+        choices=sorted(bhav["SYMBOL"].dropna().unique().tolist())
+        selected=st.multiselect("Filter imported NSE symbols",choices,default=choices[:min(10,len(choices))],key="nse_bhav_symbols")
+        filtered=bhav[bhav["SYMBOL"].isin(selected)] if selected else bhav.iloc[0:0]
+        st.dataframe(filtered,use_container_width=True,hide_index=True)
+        st.download_button("Download filtered NSE history",filtered.to_csv(index=False),"nse_bhavcopy_history.csv","text/csv")
+        st.caption("Source: user-uploaded official NSE bhavcopy. This file is end-of-day data, not intraday/live market depth.")
+    st.divider()
+    st.markdown("**Fetch historical candles from Kite (NSE cash equities)**")
+    symbols_text=st.text_input("NSE equity symbols",value="RELIANCE,SBIN,INFY",key="hist_symbols")
+    d1,d2=st.columns(2)
+    hist_start=d1.date_input("From date",value=datetime.now(IST).date()-timedelta(days=90),key="hist_start")
+    hist_end=d2.date_input("To date",value=datetime.now(IST).date(),key="hist_end")
+    if st.button("Fetch historical candles",type="primary",key="fetch_kite_history"):
+        try:
+            if not connected:
+                st.error("Verify Kite connection to fetch historical candles.")
+            elif hist_start>hist_end:
+                st.error("From date must be on or before To date.")
+            else:
+                symbols=[x.strip().upper() for x in symbols_text.split(",") if x.strip()]
+                with st.spinner("Fetching NSE historical daily candles..."):
+                    history=fetch_kite_historical(kite,symbols,datetime.combine(hist_start,datetime.min.time()),datetime.combine(hist_end,datetime.max.time()),"day")
+                st.session_state.kite_historical=history
+                if history.empty:
+                    st.warning("No historical candles returned. Check symbols, dates and Kite historical-data entitlement.")
+        except Exception as exc:
+            st.error(f"Historical fetch failed: {exc}")
+    hist=st.session_state.get("kite_historical")
+    if hist is not None and not hist.empty:
+        st.dataframe(hist,use_container_width=True,hide_index=True)
+        st.download_button("Download Kite historical candles",hist.to_csv(index=False),"kite_nse_historical.csv","text/csv")
+        st.caption(f"Source: Kite historical API · {hist['SYMBOL'].nunique()} symbols · {len(hist):,} candles. This is not a direct NSE feed.")
+    st.info("NSE official bhavcopy files are available from NSE All Reports. Download the required date's CM-UDiFF Bhavcopy and upload it above. Automated scraping of NSE pages is not used.")
 
-with tabs[4]:
+with tabs[5]:
     st.markdown("""### Indicator definitions
 - **BUY CE:** bullish six-EMA alignment, price above VWAP, RSI strength and ATR activity.
 - **BUY PE:** bearish six-EMA alignment, price below VWAP, RSI weakness and ATR activity.

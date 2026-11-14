@@ -58,6 +58,10 @@ def init_db(db_path=None):
           stop_order_id TEXT, target_price REAL, status TEXT NOT NULL,
           opened_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload_json TEXT
         );
+        CREATE TABLE IF NOT EXISTS worker_heartbeats(
+          worker_name TEXT PRIMARY KEY, heartbeat_time TEXT NOT NULL,
+          status TEXT NOT NULL, message TEXT, payload_json TEXT
+        );
         CREATE TABLE IF NOT EXISTS equity_snapshots(
           id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_time TEXT NOT NULL,
           bot_name TEXT NOT NULL, realised_pnl REAL NOT NULL, unrealised_pnl REAL NOT NULL,
@@ -141,9 +145,21 @@ def dashboard_data(db_path=None):
         trades=[dict(r) for r in c.execute("SELECT * FROM broker_trades ORDER BY trade_time DESC LIMIT 250")]
         positions=[dict(r) for r in c.execute("SELECT * FROM bot_positions WHERE status='OPEN' ORDER BY opened_at DESC")]
         snapshots=[dict(r) for r in c.execute("SELECT * FROM equity_snapshots ORDER BY snapshot_time")]
+        heartbeats=[dict(r) for r in c.execute("SELECT * FROM worker_heartbeats ORDER BY worker_name")]
     # Broker tradebook may contain both entry and exit fills. Net realised P&L is
     # computed from broker positions by the caller; do not infer closed P&L from fills alone.
-    return {"events":events,"orders":orders,"trades":trades,"positions":positions,"snapshots":snapshots}
+    return {"events":events,"orders":orders,"trades":trades,"positions":positions,"snapshots":snapshots,"heartbeats":heartbeats}
+
+
+
+def update_worker_heartbeat(worker_name,status="RUNNING",message="",payload=None,db_path=None):
+    now=datetime.now(IST).isoformat()
+    with connect(db_path) as c:
+        c.execute("""INSERT INTO worker_heartbeats(worker_name,heartbeat_time,status,message,payload_json)
+        VALUES(?,?,?,?,?) ON CONFLICT(worker_name) DO UPDATE SET
+        heartbeat_time=excluded.heartbeat_time,status=excluded.status,
+        message=excluded.message,payload_json=excluded.payload_json""",
+        (worker_name,now,status,message,json.dumps(payload or {},default=str)))
 
 
 def save_equity_snapshot(bot_name,realised,unrealised,payload=None,db_path=None):

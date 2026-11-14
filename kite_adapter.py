@@ -110,8 +110,14 @@ def select_option_contract(kite, underlying: str, option_side: str, moneyness="A
     if not quote:
         raise RuntimeError(f"No live quote returned for {key}")
     depth = quote.get("depth") or {}
-    buy = (depth.get("buy") or [{}])[0].get("price", 0) or 0
-    sell = (depth.get("sell") or [{}])[0].get("price", 0) or 0
+    buy_levels = depth.get("buy") or []
+    sell_levels = depth.get("sell") or []
+    buy = (buy_levels or [{}])[0].get("price", 0) or 0
+    sell = (sell_levels or [{}])[0].get("price", 0) or 0
+    # Five-level order-book depth snapshot, not executed trade volume.
+    buyer_depth_qty = sum(int(level.get("quantity") or 0) for level in buy_levels[:5])
+    seller_depth_qty = sum(int(level.get("quantity") or 0) for level in sell_levels[:5])
+    buyer_seller_depth_ratio = (buyer_depth_qty / seller_depth_qty) if seller_depth_qty > 0 else None
     ltp = float(quote.get("last_price") or 0)
     if ltp <= 0:
         raise RuntimeError("Option premium is unavailable")
@@ -125,7 +131,10 @@ def select_option_contract(kite, underlying: str, option_side: str, moneyness="A
         "option_ltp": ltp, "best_bid": float(buy or 0),
         "best_ask": float(sell or 0), "spread_pct": spread_pct,
         "volume": int(quote.get("volume") or 0),
-        "oi": int(quote.get("oi") or 0), "quote_time": str(quote.get("timestamp") or quote.get("last_trade_time") or "")
+        "oi": int(quote.get("oi") or 0),
+        "buyer_depth_qty": buyer_depth_qty, "seller_depth_qty": seller_depth_qty,
+        "buyer_seller_depth_ratio": buyer_seller_depth_ratio,
+        "quote_time": str(quote.get("timestamp") or quote.get("last_trade_time") or "")
     }
 
 def get_option_ltp(kite, tradingsymbol: str) -> float:

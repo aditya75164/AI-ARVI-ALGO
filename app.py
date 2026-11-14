@@ -85,16 +85,13 @@ tabs=st.tabs(["F&O Stock Selection","Equity Stock Selection","Live Market Monito
 with tabs[0]:
     st.subheader("F&O stock selection")
     st.caption("Scans F&O-eligible stock underlyings using daily historical candles, trend, momentum and relative volume.")
-    p1,p2,p3=st.columns(3)
-    max_fno=p1.number_input("Maximum F&O stocks to analyse",10,100,35,5,key="max_fno")
-    tgt_fno=p2.number_input("Target %",1.0,30.0,10.0,1.0,key="tgt_fno")
-    sl_fno=p3.number_input("Stop loss %",1.0,15.0,5.0,0.5,key="sl_fno")
+    max_fno=st.number_input("Maximum F&O stocks to analyse",10,100,35,5,key="max_fno")
     if st.button("Scan F&O stocks",type="primary",key="scan_fno_universe"):
         try:
             if not connected: st.error("Verify Kite connection first.")
             else:
                 with st.spinner("Scanning F&O stock universe and daily history..."):
-                    frame,stats=scan_stock_universe(kite,"FNO",int(max_fno),tgt_fno,sl_fno)
+                    frame,stats=scan_stock_universe(kite,"FNO",int(max_fno))
                 st.session_state.fno_selection=frame
                 st.session_state.fno_selection_stats=stats
         except Exception as exc: st.error(f"F&O scan failed: {exc}")
@@ -112,16 +109,13 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("NSE equity stock selection")
     st.caption("Scans NSE cash-equity stocks separately from the F&O universe using daily historical candles.")
-    p1,p2,p3=st.columns(3)
-    max_eq=p1.number_input("Maximum equity stocks to analyse",10,100,35,5,key="max_eq")
-    tgt_eq=p2.number_input("Target %",1.0,30.0,10.0,1.0,key="tgt_eq")
-    sl_eq=p3.number_input("Stop loss %",1.0,15.0,5.0,0.5,key="sl_eq")
+    max_eq=st.number_input("Maximum equity stocks to analyse",10,100,35,5,key="max_eq")
     if st.button("Scan NSE equity stocks",type="primary",key="scan_equity_universe"):
         try:
             if not connected: st.error("Verify Kite connection first.")
             else:
                 with st.spinner("Scanning NSE equity universe and daily history..."):
-                    frame,stats=scan_stock_universe(kite,"EQUITY",int(max_eq),tgt_eq,sl_eq)
+                    frame,stats=scan_stock_universe(kite,"EQUITY",int(max_eq))
                 st.session_state.equity_selection=frame
                 st.session_state.equity_selection_stats=stats
         except Exception as exc: st.error(f"Equity scan failed: {exc}")

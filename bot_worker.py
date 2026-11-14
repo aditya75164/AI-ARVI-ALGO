@@ -324,16 +324,21 @@ def main():
              live_authorized(cfg),recovery["safe_for_new_entries"],cfg["symbols"])
     while not STOP:
         now=datetime.now(IST)
-        if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20" and recovery["safe_for_new_entries"]:
+        market_open = now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20"
+        if market_open and recovery["safe_for_new_entries"]:
             try:
                 # Always manage already-open positions, even if the new-entry switch is OFF.
                 exits=monitor_open_positions(kite)
                 result=run_scan_cycle(kite,cfg)
-                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_authorized(cfg),"safe_for_new_entries":recovery["safe_for_new_entries"]})
+                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last market cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_authorized(cfg),"safe_for_new_entries":recovery["safe_for_new_entries"]})
                 LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
             except Exception as exc:
                 update_worker_heartbeat("INDEX_OPTIONS","ERROR",str(exc))
                 LOG.exception("Worker cycle failed")
+        elif not market_open:
+            # Keep the heartbeat fresh outside market hours too; the worker is still alive.
+            update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker alive; waiting for NSE market hours",
+                {"market_open":False,"live_enabled":live_authorized(cfg)})
         if recovery["safe_for_new_entries"] is False:
             # Re-check broker/local alignment periodically; never auto-adopt an unknown position.
             try:

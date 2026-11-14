@@ -89,7 +89,7 @@ c2.metric("Dashboard mode","Market monitor only")
 c3.metric("Order execution","Removed")
 st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
 
-tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide"],"Paper Trading"])
+tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide","Paper Trading"])
 with tabs[0]:
     st.subheader("Automated Trading Bot · Control Center")
     st.caption("Broker-synchronised orders, tradebook, positions and performance. This panel reports real Kite records; it does not invent fills or P&L.")

@@ -17,6 +17,7 @@ from engine import add_dtc_style_indicators, build_signal
 from kite_adapter import select_option_contract, quote_timestamp_age_seconds
 from bot_ledger import init_db, record_event, dashboard_data, upsert_position, close_position, update_worker_heartbeat
 from order_executor import place_guarded_entry, place_protective_stop, reconcile_order, cancel_order, ExecutionBlocked, live_enabled
+from startup_reconciliation import reconcile_startup_state
 
 IST=ZoneInfo("Asia/Kolkata")
 STOP=False
@@ -119,6 +120,12 @@ def run_scan_cycle(kite,cfg):
                      "Daily loss limit reached; no new entries allowed",{"day_pnl":day_pnl})
         return [{"status":"DAILY_LOSS_LIMIT","day_pnl":day_pnl}]
     active_broker=[p for p in broker_net if int(p.get("quantity") or 0)!=0 and str(p.get("exchange","")) in ("NFO","NSE")]
+    tracked={(str(p.get("exchange","")).upper(),str(p.get("tradingsymbol","")).upper()) for p in open_positions}
+    unmanaged=[p for p in active_broker if (str(p.get("exchange","")).upper(),str(p.get("tradingsymbol","")).upper()) not in tracked]
+    if unmanaged:
+        record_event("RISK_MANAGER","UNMANAGED_POSITION","BLOCKED",
+                     "Untracked broker position detected; no new entries will be sent",{"positions":unmanaged})
+        return [{"status":"UNMANAGED_BROKER_POSITION","count":len(unmanaged)}]
     if len(active_broker)>=int(cfg["max_open_positions"]):
         return [{"status":"BROKER_POSITION_LIMIT","open_positions":len(active_broker)}]
     for symbol in cfg["symbols"]:
@@ -255,21 +262,37 @@ def monitor_open_positions(kite):
 
 def main():
     signal.signal(signal.SIGTERM,_stop); signal.signal(signal.SIGINT,_stop)
-    cfg=load_config(); kite=create_kite()
-    init_db(); update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker connected to Kite",{"symbols":cfg["symbols"],"live_enabled":live_enabled()})
-    LOG.info("ARVI worker started; live execution=%s; symbols=%s",live_enabled(),cfg["symbols"])
+    cfg=load_config()
+    init_db()
+    kite=create_kite()
+    recovery=reconcile_startup_state(kite)
+    update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Worker connected; startup reconciliation complete",
+        {"symbols":cfg["symbols"],"live_enabled":live_enabled(),
+         "safe_for_new_entries":recovery["safe_for_new_entries"],
+         "unmanaged_positions":len(recovery["unmanaged_positions"])})
+    LOG.info("ARVI worker started; live execution=%s; startup safe=%s; symbols=%s",
+             live_enabled(),recovery["safe_for_new_entries"],cfg["symbols"])
     while not STOP:
         now=datetime.now(IST)
-        if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20":
+        if now.weekday()<5 and "09:20"<=now.strftime("%H:%M")<="15:20" and recovery["safe_for_new_entries"]:
             try:
                 # Always manage already-open positions, even if the new-entry switch is OFF.
                 exits=monitor_open_positions(kite)
                 result=run_scan_cycle(kite,cfg)
-                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_enabled()})
+                update_worker_heartbeat("INDEX_OPTIONS","RUNNING","Last cycle completed",{"position_monitor":exits,"scan":result,"live_enabled":live_enabled(),"safe_for_new_entries":recovery["safe_for_new_entries"]})
                 LOG.info("Position monitor: %s | Cycle result: %s",exits,result)
             except Exception as exc:
                 update_worker_heartbeat("INDEX_OPTIONS","ERROR",str(exc))
                 LOG.exception("Worker cycle failed")
+        if recovery["safe_for_new_entries"] is False:
+            # Re-check broker/local alignment periodically; never auto-adopt an unknown position.
+            try:
+                recovery=reconcile_startup_state(kite)
+                update_worker_heartbeat("INDEX_OPTIONS","BLOCKED" if not recovery["safe_for_new_entries"] else "RUNNING",
+                    "Unmanaged broker position requires manual review" if not recovery["safe_for_new_entries"] else "Position reconciliation cleared",
+                    {"unmanaged_positions":len(recovery["unmanaged_positions"])})
+            except Exception as exc:
+                update_worker_heartbeat("INDEX_OPTIONS","ERROR","Recovery check failed: "+str(exc))
         time.sleep(max(10,int(cfg["poll_seconds"])))
     update_worker_heartbeat("INDEX_OPTIONS","STOPPED","Worker received shutdown signal")
     LOG.info("ARVI worker stopped")

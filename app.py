@@ -85,9 +85,9 @@ kite=kite_client()
 connected=bool(st.session_state.kite_profile) and kite is not None
 c1,c2,c3=st.columns(3)
 c1.metric("Kite market data","Connected" if connected else "Not verified")
-c2.metric("Dashboard mode","Market monitor only")
-c3.metric("Order execution","Removed")
-st.info("This dashboard is read-only. It does not place, modify or cancel orders.")
+c2.metric("Dashboard mode","Market + Paper")
+c3.metric("Broker orders","OFF · Paper only")
+st.info("Broker order execution is disabled. Paper BUY/SELL trades are simulated locally and never reach Zerodha.")
 
 tabs=st.tabs(["Bot Control Center","Daily Market Brief","F&O Stock Selection","Equity Stock Selection","Live Market Monitor","Index Signals","F&O Options Watch","Indicator Guide","Paper Trading"])
 with tabs[0]:
@@ -509,4 +509,4 @@ with tabs[8]:
         cc.metric("Wins / Losses",f"{result['wins']} / {result['losses']}"); dd.metric("Net points per unit",f"{result['net_points_per_unit']:.2f}")
         if result["trades"]: st.dataframe(pd.DataFrame(result["trades"]),use_container_width=True,hide_index=True)
         st.warning(result["note"])
-    st.caption("Paper positions are marked when you refresh the live prices. Stop/target are not exchange orders or guaranteed fills.")
+    st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

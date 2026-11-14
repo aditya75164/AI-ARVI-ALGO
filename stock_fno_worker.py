@@ -42,9 +42,32 @@ def _stop(*_):
     STOP=True
 
 
+def connect_with_retry():
+    """Keep the signal worker alive and expose expired credentials in its heartbeat."""
+    while not STOP:
+        try:
+            kite=create_kite()
+            update_worker_heartbeat("STOCK_FNO","RUNNING","Kite session connected; order execution disabled")
+            return kite
+        except Exception as exc:
+            message=str(exc)
+            auth_hint=any(word in message.lower() for word in ("token","auth","session","permission","api key"))
+            status="AUTH_REQUIRED" if auth_hint else "ERROR"
+            update_worker_heartbeat("STOCK_FNO",status,"Kite connection unavailable: "+message[:240])
+            LOG.warning("STOCK_FNO connection unavailable (%s); retrying in 60 seconds",status)
+            for _ in range(60):
+                if STOP: break
+                time.sleep(1)
+    return None
+
+
 def main():
     signal.signal(signal.SIGTERM,_stop); signal.signal(signal.SIGINT,_stop)
-    kite=create_kite()
+    init_db()
+    kite=connect_with_retry()
+    if kite is None:
+        update_worker_heartbeat("STOCK_FNO","STOPPED","Worker shutdown requested")
+        return
     interval=max(300,int(os.getenv("ARVI_STOCK_SCAN_SECONDS","900")))
     limit=max(10,min(100,int(os.getenv("ARVI_STOCK_MAX_STOCKS","25"))))
     init_db(); update_worker_heartbeat("STOCK_FNO","RUNNING","Worker connected; order execution disabled")

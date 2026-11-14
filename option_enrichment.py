@@ -151,6 +151,11 @@ def enrich_fno_option_premiums(kite,stocks,max_stocks=35,batch_size=150):
     # then stronger buyer pressure and OI, without pretending this is a live BUY order.
     frame=frame[frame["Buyer Pressure"]>=1.2]
     if frame.empty: return frame
-    frame=frame.sort_values(["Stock","Option Theta / Day","Buyer Pressure","Option OI"],
-                            ascending=[True,False,False,False])
-    return frame.drop_duplicates("Stock").reset_index(drop=True)
+    # Prefer the smallest absolute daily theta decay, then stronger displayed
+    # bid-side depth, OI, volume and tighter spread for each unique underlying.
+    frame["Absolute Theta / Day"] = frame["Option Theta / Day"].abs()
+    frame=frame.sort_values(
+        ["Stock","Absolute Theta / Day","Buyer Pressure","Option OI","Option Volume","Option Spread %"],
+        ascending=[True,True,False,False,False,True]
+    )
+    return frame.drop_duplicates("Stock").drop(columns=["Absolute Theta / Day"]).reset_index(drop=True)

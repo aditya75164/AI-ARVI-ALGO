@@ -27,7 +27,8 @@ def add_dtc_style_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     typical=(high+low+close)/3
     if isinstance(d.index,pd.DatetimeIndex):
         session=pd.Index(d.index.date)
-        session_volume=vol.groupby(session).cumsum().replace(0,np.nan)\n        weighted=(typical*vol).groupby(session).cumsum()/session_volume\n        # Index candles often carry zero volume; use an explicitly documented\n        # session typical-price mean proxy instead of returning all-NaN VWAP.\n        proxy=typical.groupby(session).cumsum()/pd.Series(1.0,index=d.index).groupby(session).cumsum()\n        d["VWAP"]=weighted.where(session_volume.notna(),proxy)
+        session_volume=vol.groupby(session).cumsum().replace(0,np.nan)
+        weighted=(typical*vol).groupby(session).cumsum()/session_volume\n        # Index candles often carry zero volume; use an explicitly documented\n        # session typical-price mean proxy instead of returning all-NaN VWAP.\n        proxy=typical.groupby(session).cumsum()/pd.Series(1.0,index=d.index).groupby(session).cumsum()\n        d["VWAP"]=weighted.where(session_volume.notna(),proxy)
     else:
         d["VWAP"]=(typical*vol).rolling(20,min_periods=5).sum()/vol.rolling(20,min_periods=5).sum().replace(0,np.nan)
     d["EMA_BULL"]=d[[f"EMA_{p}" for p in EMA_PERIODS]].apply(lambda r: all(pd.notna(r)) and all(r.iloc[i]>r.iloc[i+1] for i in range(len(r)-1)),axis=1)

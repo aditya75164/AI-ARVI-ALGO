@@ -6,7 +6,7 @@ from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
-    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity
+    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity, filter_live_option_contracts
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
@@ -176,12 +176,20 @@ with tabs[3]:
         try:
             if not connected: st.error("Connect Kite first.")
             else:
-                contracts=fetch_derivative_contracts(kite,ex,underlying.strip() or None,side)
+                raw_contracts=fetch_derivative_contracts(kite,ex,underlying.strip() or None,side)
+                with st.spinner('Checking live quotes, volume, OI, depth, timestamp and spread...'):
+                    contracts, stats=filter_live_option_contracts(kite,raw_contracts,exchange=ex)
                 st.session_state.derivative_list=contracts
+                st.session_state.derivative_stats=stats
         except Exception as exc: st.error(f"Instrument lookup failed: {exc}")
     contracts=st.session_state.get("derivative_list")
+    stats=st.session_state.get('derivative_stats')
+    if stats:
+        st.caption(f"Checked {stats['checked']} contracts · Eligible: {stats['eligible']} · Rejected: {stats['rejected']}")
+        if stats['reason'].startswith('Market is closed'):
+            st.warning('Market is closed. Previous-session quotes are not treated as live picks.')
     if contracts is not None and not contracts.empty:
-        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","exchange"]]
+        view=contracts[["name","tradingsymbol","expiry","strike","instrument_type","lot_size","last_price","volume","oi","spread_pct","exchange"]]
         st.dataframe(view,use_container_width=True)
         chosen=st.selectbox("Select contract",contracts["tradingsymbol"].tolist())
         row=contracts[contracts["tradingsymbol"]==chosen].iloc[0]
@@ -211,8 +219,10 @@ with tabs[3]:
                     st.caption(f"Quote time: {q['timestamp'] or 'not supplied'}")
                 except Exception as exc: st.error(f"Option quote failed: {exc}")
             option_monitor()
+    elif contracts is not None and contracts.empty:
+        st.warning('NO LIVE-LIQUID CONTRACTS FOUND. Zero volume/OI, stale quotes, missing depth and wide spreads are excluded.')
     else:
-        st.caption("Load the instrument master to list current unexpired eligible CE/PE contracts.")
+        st.caption('Load contracts during market hours. Only live, liquid CE/PE contracts will appear.')
 
 with tabs[4]:
     st.markdown("""### Indicator definitions

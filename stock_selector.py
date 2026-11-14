@@ -36,6 +36,40 @@ def headline_score(name, symbol, headlines):
     score=max(-1,min(1,(pos-neg)/max(1,pos+neg)))
     return score, " | ".join(related[:2])
 
+
+def quote_is_usable(quote, now=None):
+    """Require positive volume, two-sided depth, tight spread and a recent quote."""
+    if not quote:
+        return False, "missing quote"
+    price=float(quote.get("last_price") or 0)
+    volume=int(quote.get("volume") or 0)
+    depth=quote.get("depth") or {}
+    bid=float(((depth.get("buy") or [{}])[0]).get("price") or 0)
+    ask=float(((depth.get("sell") or [{}])[0]).get("price") or 0)
+    if price<=0 or volume<=0:
+        return False, "zero price or traded volume"
+    if bid<=0 or ask<=0 or ask<bid:
+        return False, "missing/invalid bid-ask depth"
+    spread=(ask-bid)/price*100
+    if spread>2.0:
+        return False, f"spread too wide ({spread:.2f}%)"
+    stamp=quote.get("timestamp") or quote.get("last_trade_time")
+    if not stamp:
+        return False, "quote timestamp missing"
+    ts=pd.Timestamp(stamp)
+    if ts.tzinfo is None:
+        ts=ts.tz_localize(IST)
+    else:
+        ts=ts.tz_convert(IST)
+    current=pd.Timestamp(now or datetime.now(IST))
+    if current.tzinfo is None:
+        current=current.tz_localize(IST)
+    else:
+        current=current.tz_convert(IST)
+    if (current-ts).total_seconds()>4*24*60*60:
+        return False, "quote older than four days"
+    return True, "ok"
+
 def score_stock(frame, name, symbol, headlines):
     if frame is None or len(frame)<65:
         return None
@@ -89,7 +123,8 @@ def scan_fno_stock_candidates(kite, max_stocks=25):
         q=quotes.get(f"NSE:{name}",{})
         volume=int(q.get("volume") or 0)
         price=float(q.get("last_price") or 0)
-        if price>0 and volume>0:
+        valid, _reason=quote_is_usable(q)
+        if valid:
             liquid.append((name,token,volume,price))
     liquid=sorted(liquid,key=lambda x:x[2]*x[3],reverse=True)[:max_stocks]
     now=datetime.now(IST)
@@ -100,6 +135,13 @@ def scan_fno_stock_candidates(kite, max_stocks=25):
             if not candles: continue
             frame=pd.DataFrame(candles).set_index("date").sort_index()
             frame=frame.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
+            if frame.empty:
+                continue
+            last_bar=pd.Timestamp(frame.index[-1])
+            if last_bar.tzinfo is None:
+                last_bar=last_bar.tz_localize(IST)
+            if (pd.Timestamp(now)-last_bar).total_seconds()>4*24*60*60:
+                continue
             result=score_stock(frame,name,name,headlines)
             if result:
                 result["day_volume"]=volume

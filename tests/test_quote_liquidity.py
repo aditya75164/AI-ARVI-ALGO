@@ -25,3 +25,12 @@ def test_rejects_missing_timestamp():
 def test_accepts_valid_quote():
     result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":10})
     assert result["eligible"]
+
+def test_rejects_quote_older_than_three_minutes():
+    result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":181})
+    assert not result["eligible"]
+    assert any("stale" in reason for reason in result["reasons"])
+
+def test_rejects_friday_quote_on_saturday():
+    result=validate_option_liquidity({"last_price":100,"volume":1000,"oi":5000,"bid":99.5,"ask":100.5,"age_seconds":18*60*60})
+    assert not result["eligible"]

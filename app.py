@@ -6,7 +6,7 @@ from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_fno_stock_candidates
 from kite_adapter import (
     kite_client, login_url, generate_session, fetch_index_candles,
-    fetch_derivative_contracts, get_quote_snapshot, get_secret
+    fetch_derivative_contracts, get_quote_snapshot, get_secret, validate_option_liquidity
 )
 
 st.set_page_config(page_title="AI ARVI ALGO", page_icon="🧭", layout="wide")
@@ -193,6 +193,16 @@ with tabs[3]:
             def option_monitor():
                 try:
                     q=get_quote_snapshot(kite,ex,chosen)
+                    check=validate_option_liquidity(q)
+                    if not check["eligible"]:
+                        st.error("NO LIQUIDITY — DO NOT SELECT: " + "; ".join(check["reasons"]))
+                        a,b,c=st.columns(3)
+                        a.metric("LTP (reference only)",f"₹{q['last_price']:,.2f}")
+                        b.metric("Volume",f"{q['volume']:,}")
+                        c.metric("Open interest",f"{q['oi']:,}")
+                        st.caption(f"Bid / Ask: {q['bid']:g} / {q['ask']:g} · Quote time: {q['timestamp'] or 'missing'}")
+                        return
+                    st.success(f"LIQUIDITY CHECK PASSED · Spread {check['spread_pct']:.2f}%")
                     st.metric(f"{chosen} LTP",f"₹{q['last_price']:,.2f}")
                     a,b,c=st.columns(3)
                     a.metric("Volume",f"{q['volume']:,}")

@@ -264,7 +264,9 @@ def filter_live_option_contracts(kite, contracts, exchange='NFO', max_age_second
             eligible.append(row)
     result=pd.DataFrame(eligible)
     if not result.empty:
-        result=result.sort_values(['volume','oi'],ascending=False).reset_index(drop=True)
+        # One contract per underlying: highest OI among contracts that passed all live liquidity gates.
+        result=result.sort_values(['oi','volume'],ascending=False)
+        result=result.drop_duplicates(subset=['name'],keep='first').reset_index(drop=True)
     return result, {
         'checked':total_contracts,'eligible':len(result),'rejected':rejected,
         'underlyings':unique_underlyings,'total_contracts':total_contracts,

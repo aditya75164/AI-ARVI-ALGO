@@ -1,0 +1,42 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      ARVI_DB_PATH: /data/arvi_bot.db
+    ports:
+      - "8501:8501"
+    volumes:
+      - arvi-data:/data
+    restart: unless-stopped
+
+  index-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "bot_worker.py"]
+    env_file: .env
+    environment:
+      ARVI_DB_PATH: /data/arvi_bot.db
+      ARVI_BOT_CONFIG: /app/bot_config.example.json
+      ARVI_LIVE_TRADING: "NO"
+    volumes:
+      - arvi-data:/data
+    restart: unless-stopped
+
+  stock-fno-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "stock_fno_worker.py"]
+    env_file: .env
+    environment:
+      ARVI_DB_PATH: /data/arvi_bot.db
+    volumes:
+      - arvi-data:/data
+    restart: unless-stopped
+
+volumes:
+  arvi-data:

@@ -99,6 +99,12 @@ def place_protective_stop(kite,intent,quantity,bot_name,parent_order_id,db_path=
         "order_type":"SL","product":"MIS"}
     latest["order_id"]=str(order_id)
     upsert_order(latest,bot_name,db_path)
+    status=str(latest.get("status","UNKNOWN")).upper()
+    if status not in ("OPEN","TRIGGER PENDING","COMPLETE"):
+        record_event(bot_name,"PROTECTIVE_SL_UNCONFIRMED","ERROR",
+                     "Broker did not confirm the protective stop as active; position requires immediate manual review",
+                     {"order_id":str(order_id),"status":status,"parent_order_id":str(parent_order_id)},db_path)
+        raise ExecutionBlocked(f"Protective stop was not confirmed active (broker status: {status})")
     return str(order_id)
 
 

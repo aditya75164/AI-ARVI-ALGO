@@ -1,6 +1,6 @@
 # AI ARVI ALGO
 
-Standalone Streamlit application for NIFTY and BANKNIFTY index signals, Kite option contract discovery, and simulated options trading.
+Standalone Streamlit dashboard for NIFTY and BANKNIFTY signals and read-only Kite option contract discovery.
 
 ## Run locally
 ```bash
@@ -22,14 +22,14 @@ Never commit credentials. Without an API key and secret, login cannot be complet
 ## Features in this build
 - Kite profile verification and NIFTY/BANKNIFTY 3m, 5m and 15m historical candle retrieval.
 - Six-EMA, ATR, VWAP and RSI signal framework.
-- NFO instrument-master lookup, nearest-expiry option filtering, ATM / ITM / OTM contract selection, live premium, bid/ask spread, volume, OI and lot size.
-- Lot-size-aware paper quantity calculator using capital-at-risk.
-- Paper trade entry, live-LTP refresh while the Streamlit session is open, target/stop/trailing-stop simulation, manual paper exit, trade history and daily risk blocks.
-- GitHub Actions syntax compilation and pytest checks.
+- NFO instrument lookup, nearest-expiry option filtering, ATM / ITM / OTM contract selection, live premium, bid/ask spread, volume, OI and lot size.
+- Side-by-side Semi-Automatic and Fully Automatic preference selector.
+- Live trading ON/OFF authorization preference in the UI.
+- Paper-entry controls and paper-position monitor have been removed from the dashboard.
 
-## Important execution boundary
-This version is PAPER ONLY. It does not call Kite `place_order`, does not send real orders, and does not provide unattended live trade execution. Paper positions currently live in Streamlit session state and are cleared when the session/app restarts. The paper monitor requires an active Kite session and the app tab to remain connected. It is not a broker-side stop-loss and cannot protect a real position.
+## Critical execution status
+**This repository version does not execute live or paper orders.** The live trading switch is a UI preference only and is not connected to Kite order APIs. Turning it ON does not place an order; turning it OFF does not cancel or close any broker position. Do not use the switch as evidence that real-money execution is active.
 
-Before any real-money use, the app still needs persistent state and recovery, WebSocket/reliable quote monitoring, exchange/market-hours and stale-data checks, order lifecycle reconciliation (accepted/rejected/partial fills/cancelled), broker-side protective orders, kill switch, audit logging, and extended paper-forward testing. No trading strategy or signal is guaranteed profitable.
+Kite order placement, broker-side protective stop/target orders, persistent state and recovery, order lifecycle reconciliation (accepted/rejected/partial fills/cancelled), market-hours and stale-quote checks, kill switch, audit logging, and extended testing remain to be implemented and verified before live use. No real orders have been sent by this app build.
 
-The DTC concept is invite-only; the indicator implementation here is an independent approximation based on publicly described concepts, not proprietary source code.
+The DTC concept is invite-only; the indicator implementation here is an independent approximation based on publicly described concepts, not proprietary source code. No strategy or signal is guaranteed profitable.

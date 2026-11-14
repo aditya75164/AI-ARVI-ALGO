@@ -1,36 +1,29 @@
-# AI ARVI ALGO — Market Monitor
+# AI ARVI ALGO — F&O and Equity Stock Scanner
 
-Read-only Streamlit dashboard for market movement, volume, trend indicators and NSE/BSE F&O contract monitoring. **All real-money trading controls and order execution UI have been removed.**
+Read-only Streamlit market scanner. The primary workflows are separate stock-selection screens for (1) F&O-eligible stock underlyings and (2) NSE cash-equity stocks.
 
-## Features
-- Kite login and profile verification.
-- NIFTY/BANKNIFTY historical candles with six EMA, ATR, RSI, VWAP, bullish/bearish trend, BUY CE / BUY PE / WAIT signal and relative volume.
-- NSE/BSE cash-equity quote monitor with sampled price movement, cumulative volume change, best bid/ask and rolling charts.
-- NFO/BFO current unexpired CE/PE instrument discovery for eligible index and stock derivatives, with live quote, volume and OI monitor.
-- Configurable 1s/2s/5s polling via Streamlit fragments.
-- Single highest-ranked F&O stock shortlist using bullish EMA/VWAP trend, 5-candle momentum, relative volume, RSI and Google News global headline context. Scanner checks up to 25 liquid F&O underlyings after quote-based liquidity ranking.
+## Main screens
+- **F&O Stock Selection:** derives its stock universe from unexpired NFO stock futures, maps each underlying to its NSE cash instrument, ranks liquid candidates, and analyses daily historical candles.
+- **Equity Stock Selection:** scans the NSE cash-equity universe independently using the same daily-candle trend and volume methodology.
+- Both tables show stock, price, BUY/SELL/WAIT, trend, score, RSI, relative volume, momentum, volume, entry reference, target, stop loss, candle date and data source.
+- Target and stop-loss percentages are editable. Defaults are 10% and 5%; they are calculation references, not predicted or guaranteed returns.
+- Additional screens retain live quote monitoring, NIFTY/BANKNIFTY indicators and F&O option contract monitoring.
+
+## Data and method
+- Kite instrument masters define the F&O and NSE equity universes.
+- Kite quote data ranks candidate stocks by turnover when available.
+- Kite historical daily candles drive the stock signal calculation. If quote volume is unavailable (for example, outside market hours), the scanner falls back to a bounded deterministic slice of the instrument universe and labels results by their historical candle date.
+- Daily signals use six EMAs (30/35/40/45/50/60), VWAP, RSI(14), relative volume and six-session momentum.
+- BUY requires bullish EMA alignment, close above VWAP, RSI >= 52 and positive momentum. SELL requires bearish EMA alignment, close below VWAP, RSI <= 48 and negative momentum. Otherwise WAIT.
+- This is a technical screening rule, not a promise of 10% returns or investment advice. Validate liquidity and current prices before any decision.
 
 ## Setup
-Configure `KITE_API_KEY`, `KITE_API_SECRET`, and optionally `KITE_ACCESS_TOKEN` in Streamlit Cloud Secrets or environment variables. Never commit credentials. Login tokens have a daily lifecycle.
+Configure `KITE_API_KEY`, `KITE_API_SECRET`, and optionally `KITE_ACCESS_TOKEN` in Streamlit Cloud Secrets or environment variables. Never commit credentials.
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Data limitations
-The dashboard uses Kite quote polling. A one-second polling interval is a requested refresh cadence, not a guarantee of one exchange tick per second. Streamlit Cloud sleeping, API rate limits, market-data entitlements, network latency and quote availability can delay updates. True tick-by-tick streaming requires a persistent KiteTicker/WebSocket connection on an always-on server; this build does not claim that WebSocket streaming is active.
-
-Index historical candles may have zero volume from the provider; relative volume is meaningful only when candle volume is populated. Stock F&O availability depends on the current exchange instrument master and your Kite market-data entitlements.
-
-## Safety
-This app is market-data and indicator only. It does not submit, modify, or cancel orders. BUY/SELL labels are rule-based technical signals and are not guaranteed predictions or investment advice.
-
-
-## Historical data sources
-- **NSE official bhavcopy:** In the NSE Historical Data tab, upload the official CM-UDiFF bhavcopy CSV/ZIP downloaded from [NSE All Reports](https://www.nseindia.com/all-reports). The parser normalizes equity OHLC, volume, series and available UDiFF fields including expiry, strike, option type and OI. This is exchange-published end-of-day data, not live depth or intraday candles.
-- **Kite historical candles:** With a verified Kite account and historical-data entitlement, enter NSE symbols and a date range in the same tab to fetch daily OHLCV candles using Kite's historical API. The app labels this source as Kite, not direct NSE.
-- NSE's official EOD/historical data products are also available by subscription through NSE Data & Analytics. This app does not scrape NSE pages or invent a public API endpoint. See [NSE EOD/Historical Data](https://www.nse.in/static/market-data/eod-historical-data-subscription) and [NSE All Reports](https://www.nseindia.com/all-reports).
-
-## Historical data limitations
-Bhavcopy uploads contain only the dates and segments included in the file. The CM equity bhavcopy does not provide full intraday candles. Use an NSE F&O bhavcopy for option contract EOD fields. Kite historical candles require a verified account and the relevant historical-data entitlement.
+## Limitations and safety
+The app is read-only. It does not place, modify or cancel broker orders. Kite quote polling is not an exchange tick-by-tick WebSocket feed. Historical-data availability depends on Kite entitlements, instrument coverage, API limits and requested date range. No result is guaranteed to be profitable.

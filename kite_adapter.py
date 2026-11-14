@@ -19,7 +19,7 @@ INTERVALS={"3minute":"3minute","5minute":"5minute","15minute":"15minute"}
 
 def kite_client():
     api_key=_secret("KITE_API_KEY")
-    access_token=os.getenv("KITE_ACCESS_TOKEN")
+    access_token=st.session_state.get("kite_access_token") or _secret("KITE_ACCESS_TOKEN")
     if not api_key or not access_token:
         return None
     kite=KiteConnect(api_key=api_key)
@@ -27,7 +27,7 @@ def kite_client():
     return kite
 
 def login_url():
-    key=os.getenv("KITE_API_KEY")
+    key=_secret("KITE_API_KEY")
     if not key: raise RuntimeError("KITE_API_KEY is not configured")
     return KiteConnect(api_key=key).login_url()
 

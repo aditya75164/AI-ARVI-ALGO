@@ -189,7 +189,7 @@ with tabs[3]:
             st.session_state.selected_derivative={"exchange":ex,"tradingsymbol":chosen}
         sel=st.session_state.selected_derivative
         if sel and sel["tradingsymbol"]==chosen:
-            @st.fragment(run_every={"1 second":1,"2 seconds":2,"5 seconds":5}[refresh])
+            @st.fragment(run_every=refresh_seconds)
             def option_monitor():
                 try:
                     q=get_quote_snapshot(kite,ex,chosen)

@@ -378,3 +378,26 @@ def calculate_equity_backtest_metrics(result, brokerage_per_order=20.0,
             "max_drawdown":round(max_dd,2),
             "profit_factor":round(pf,3) if pf!=float("inf") else float("inf"),
             "note":"Estimated intraday-equity charges; quantity defaults to one share. Confirm exact taxes with broker contract note."}
+
+
+def compare_underlying_horizons(candles,horizons=(30,60,90),**strategy_kwargs):
+    """Compare underlying strategy on exact trailing trading-session windows."""
+    import pandas as pd
+    frame=candles.copy(); frame.columns=[str(x).lower() for x in frame.columns]
+    if "date" in frame.columns:
+        frame["date"]=pd.to_datetime(frame["date"],errors="coerce")
+        frame=frame.dropna(subset=["date"]).sort_values("date")
+    output={}
+    for horizon in horizons:
+        requested=int(horizon); available=len(frame)
+        if available<requested:
+            output[requested]={"available":False,"sessions_available":available,
+                "reason":f"Only {available} daily candles available; {requested} required"}
+            continue
+        sample=frame.tail(requested)
+        try:
+            result=backtest_directional_underlying(sample,**strategy_kwargs)
+            output[requested]={"available":True,"sessions_available":len(sample),**result}
+        except Exception as exc:
+            output[requested]={"available":False,"sessions_available":len(sample),"reason":str(exc)}
+    return output

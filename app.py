@@ -629,7 +629,8 @@ with tabs[8]:
                 option_rows=[]; option_diagnostics=[]
                 directional=underlying_signals[underlying_signals["Signal"].isin(["BUY","SELL"])].copy() if not underlying_signals.empty else pd.DataFrame()
                 if not directional.empty:
-                    rank_cols=[col for col in ["Score","Relative Volume","Turnover ₹"] if col in directional.columns]\n                    directional=directional.sort_values(rank_cols,ascending=[False]*len(rank_cols)).drop_duplicates("Stock").head(30) if rank_cols else directional.drop_duplicates("Stock").head(30)
+                    rank_cols=[col for col in ["Score","Relative Volume","Turnover ₹"] if col in directional.columns]
+                    directional=directional.sort_values(rank_cols,ascending=[False]*len(rank_cols)).drop_duplicates("Stock").head(30) if rank_cols else directional.drop_duplicates("Stock").head(30)
                 with st.spinner(f"2/4 · Selecting trend-aligned CE/PE contracts for {len(directional)} ranked underlyings..."):
                     try:
                         selected_options=enrich_fno_option_premiums(kite,directional,max_stocks=30) if not directional.empty else pd.DataFrame()

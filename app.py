@@ -7,7 +7,7 @@ from engine import add_dtc_style_indicators, build_signal
 from stock_selector import scan_stock_universe
 from option_enrichment import enrich_fno_option_premiums
 from bot_ledger import init_db, sync_broker_history, dashboard_data
-from paper_trading import quantity_for_risk, open_paper_trade, mark_paper_trade, close_paper_trade, can_open_trade, backtest_ema_strategy
+from paper_trading import quantity_for_risk, open_paper_trade, mark_paper_trade, close_paper_trade, can_open_trade, backtest_ema_strategy, compare_backtest_horizons, calculate_backtest_metrics
 from paper_ledger import init_paper_db, load_paper_trades, save_paper_trade, paper_summary
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
@@ -584,8 +584,8 @@ with tabs[8]:
         **Important:** signals are research filters, not guaranteed recommendations. Verify liquidity, spread, underlying trend and risk before any paper trade.
         """)
     st.markdown("#### Automatic multi-stock NSE F&O backtest")
-    st.caption("This replaces the one-contract manual backtest: scan the full active NSE F&O universe, select one best CE/PE contract per unique stock, then rank stocks by their own historical option performance.")
-    st.info("Each result row represents a different underlying stock/index. The trade count is shown separately per stock; it is not a single-stock-only combined list.")
+    st.caption("Compares 30, 60 and 90 available trading sessions for one automatically selected CE/PE contract per unique NSE F&O stock/index.")
+    st.info("Includes estimated Zerodha NSE option charges, net P&L, maximum drawdown, profit factor, CE vs PE, NIFTY vs BANKNIFTY and directional strategy accuracy. Option contracts expire, so longer horizons are shown only when that exact contract has enough history; no missing data is fabricated.")
     if st.button("RUN FULL NSE MULTI-STOCK BACKTEST",type="primary",key="paper_backtest_all_stocks"):
         if kite is None:
             st.error("Kite login is required to scan NSE F&O instruments and download historical candles.")
@@ -596,86 +596,94 @@ with tabs[8]:
                 st.session_state.paper_multi_scan_stats=auto_stats
                 auto_directional=auto_stocks[auto_stocks["Signal"].isin(["BUY","SELL"])].copy() if not auto_stocks.empty else pd.DataFrame()
                 if not auto_directional.empty:
-                    auto_directional=auto_directional.sort_values(
-                        ["Score","Relative Volume","Turnover ₹"],
-                        ascending=[False,False,False]
-                    ).drop_duplicates("Stock").reset_index(drop=True)
+                    auto_directional=auto_directional.sort_values(["Score","Relative Volume","Turnover ₹"],ascending=[False,False,False]).drop_duplicates("Stock").reset_index(drop=True)
                 auto_shortlist=auto_directional.head(30).copy()
                 with st.spinner(f"2/4 · Finding one best liquid CE/PE option for {len(auto_shortlist)} unique stocks..."):
                     auto_options=enrich_fno_option_premiums(kite,auto_shortlist,max_stocks=30) if not auto_shortlist.empty else pd.DataFrame()
-                auto_results=[]
+                horizon_rows=[]
+                availability_rows=[]
                 if not auto_options.empty:
-                    with st.spinner(f"3/4 · Backtesting each stock's selected option over 30 days of 5-minute candles..."):
+                    with st.spinner("3/4 · Downloading daily option candles and testing 30/60/90 trading-session horizons..."):
                         auto_master=pd.DataFrame(kite.instruments("NFO"))
                         auto_tokens=dict(zip(auto_master["tradingsymbol"].astype(str),auto_master["instrument_token"].astype(int))) if not auto_master.empty else {}
-                        auto_end=datetime.now(IST); auto_start=auto_end-timedelta(days=30)
+                        auto_end=datetime.now(IST); auto_start=auto_end-timedelta(days=180)
                         for _,auto_option in auto_options.iterrows():
                             auto_symbol=str(auto_option["Option Symbol"])
                             auto_token=auto_tokens.get(auto_symbol)
                             if not auto_token: continue
                             try:
-                                auto_candles=pd.DataFrame(kite.historical_data(auto_token,auto_start,auto_end,"5minute"))
-                                if auto_candles.empty or "date" not in auto_candles.columns: continue
+                                auto_candles=pd.DataFrame(kite.historical_data(auto_token,auto_start,auto_end,"day"))
+                                if auto_candles.empty or "date" not in auto_candles.columns:
+                                    availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Status":"No daily option history"})
+                                    continue
                                 auto_candles["date"]=pd.to_datetime(auto_candles["date"],errors="coerce",utc=True).dt.tz_convert("Asia/Kolkata")
-                                auto_test=backtest_ema_strategy(auto_candles,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
-                                if int(auto_test.get("trade_count",0))<1: continue
+                                comparisons=compare_backtest_horizons(auto_candles,horizons=(30,60,90),fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                                lot=int(auto_option.get("Option Lot Size") or 1)
                                 auto_row=auto_directional.loc[auto_directional["Stock"].eq(auto_option["Stock"])]
                                 if auto_row.empty: continue
-                                auto_signal=auto_row.iloc[0]
-                                auto_trade_returns=[float(t.get("return_pct",0.0)) for t in auto_test.get("trades",[])]
-                                auto_results.append({
-                                    "Stock":str(auto_option["Stock"]),
-                                    "Option":str(auto_option["Option Side"]),
-                                    "Contract":auto_symbol,
-                                    "Premium (₹)":round(float(auto_option["Option Premium"]),2),
-                                    "Stock Signal":str(auto_signal["Signal"]),
-                                    "Stock Score":round(float(auto_signal["Score"]),2),
-                                    "RSI":round(float(auto_signal["RSI"]),2),
-                                    "Relative Volume":round(float(auto_signal["Relative Volume"]),2),
-                                    "Option OI":int(auto_option["Option OI"]),
-                                    "Option Volume":int(auto_option["Option Volume"]),
-                                    "Trades":int(auto_test["trade_count"]),
-                                    "Win Rate (%)":round(float(auto_test["win_rate_pct"]),2),
-                                    "Wins":int(auto_test["wins"]),
-                                    "Losses":int(auto_test["losses"]),
-                                    "Net Points / Unit":round(float(auto_test["net_points_per_unit"]),2),
-                                    "Net Return (%)":round(sum(auto_trade_returns),2),
-                                })
-                            except Exception:
-                                continue
-                auto_result_frame=pd.DataFrame(auto_results)
+                                sig=auto_row.iloc[0]
+                                for horizon,raw in comparisons.items():
+                                    if not raw.get("available"):
+                                        availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Horizon (sessions)":horizon,"Sessions available":raw.get("sessions_available",0),"Status":raw.get("reason","Insufficient history")})
+                                        continue
+                                    metrics=calculate_backtest_metrics(raw,lot_size=lot)
+                                    horizon_rows.append({
+                                        "Horizon (sessions)":horizon,"Stock":str(auto_option["Stock"]),
+                                        "Index / Stock Type":"Index" if str(auto_option["Stock"]) in ("NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","NIFTYNXT50") else "F&O Stock",
+                                        "Option Side":str(auto_option["Option Side"]),"Contract":auto_symbol,"Lot Size":lot,
+                                        "Underlying Signal":str(sig["Signal"]),"Strategy":"EMA 9/21 · daily option candles",
+                                        "Trades":metrics["trade_count"],"Wins":metrics["wins"],"Losses":metrics["losses"],
+                                        "Accuracy (%)":metrics["win_rate_pct"],"Gross P&L (₹)":metrics["gross_pnl"],
+                                        "Charges & Taxes (₹)":metrics["total_charges"],"Net P&L (₹)":metrics["net_pnl"],
+                                        "Max Drawdown (₹)":metrics["max_drawdown"],"Profit Factor":metrics["profit_factor"],
+                                        "Net Return (%)":round(sum(t["net_return_pct"] for t in metrics["trades"]),2),
+                                        "Sessions Tested":raw.get("sessions_available",0)
+                                    })
+                            except Exception as option_exc:
+                                availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Status":str(option_exc)[:160]})
+                auto_result_frame=pd.DataFrame(horizon_rows)
                 if not auto_result_frame.empty:
-                    auto_result_frame=auto_result_frame.sort_values(
-                        ["Net Return (%)","Net Points / Unit","Win Rate (%)"],
-                        ascending=False
-                    ).drop_duplicates("Stock").reset_index(drop=True)
-                    auto_result_frame.insert(0,"Rank",range(1,len(auto_result_frame)+1))
+                    auto_result_frame=auto_result_frame.sort_values(["Horizon (sessions)","Net P&L (₹)","Profit Factor","Accuracy (%)"],ascending=[True,False,False,False]).reset_index(drop=True)
+                    auto_result_frame.insert(0,"Rank",auto_result_frame.groupby("Horizon (sessions)")["Net P&L (₹)"].rank(method="first",ascending=False).astype(int))
                 st.session_state.paper_multi_backtest=auto_result_frame
+                st.session_state.paper_multi_availability=pd.DataFrame(availability_rows)
                 st.session_state.paper_multi_scan_time=datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
             except Exception as exc:
                 st.error(f"Automatic multi-stock backtest failed: {exc}")
     auto_saved=st.session_state.get("paper_multi_backtest")
     auto_stats_saved=st.session_state.get("paper_multi_scan_stats")
     if auto_stats_saved:
-        st.caption(
-            f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · "
-            f"Active F&O universe: {auto_stats_saved.get('universe',0)} · "
-            f"Daily histories checked: {auto_stats_saved.get('history_checked',0)} · "
-            f"Stocks with valid indicators: {auto_stats_saved.get('selected',0)} · BUY/SELL: {auto_stats_saved.get('directional',0)} · WAIT: {auto_stats_saved.get('wait',0)} · "
-            "Detailed option tests: up to 30 unique stocks"
-        )
+        st.caption(f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · Active F&O universe: {auto_stats_saved.get('universe',0)} · Histories checked: {auto_stats_saved.get('history_checked',0)} · Scored stocks: {auto_stats_saved.get('selected',0)} · BUY/SELL: {auto_stats_saved.get('directional',0)} · WAIT: {auto_stats_saved.get('wait',0)} · Detailed contracts: up to 30")
     if auto_saved is not None:
         if not auto_saved.empty:
-            st.success(f"{len(auto_saved)} different stocks completed at least one historical trade. Each stock appears once, with its own selected CE/PE contract and trade count shown as evidence size.")
-            st.dataframe(auto_saved,use_container_width=True,hide_index=True)
-            st.download_button(
-                "Download multi-stock NSE F&O ranking",
-                auto_saved.to_csv(index=False),
-                "arvi_multi_stock_fno_backtest.csv",
-                "text/csv"
-            )
+            st.success(f"{auto_saved['Stock'].nunique()} unique stocks/indexes produced at least one valid horizon result. Each row is one underlying and one horizon.")
+            for horizon in (30,60,90):
+                part=auto_saved[auto_saved["Horizon (sessions)"].eq(horizon)]
+                st.markdown(f"##### {horizon}-trading-session results")
+                if part.empty: st.warning(f"No selected option contract had enough history for {horizon} sessions.")
+                else: st.dataframe(part,use_container_width=True,hide_index=True)
+            st.markdown("##### CE vs PE performance")
+            side_summary=auto_saved.groupby(["Horizon (sessions)","Option Side"],as_index=False).agg(
+                Stocks=("Stock","nunique"),Trades=("Trades","sum"),Wins=("Wins","sum"),
+                Gross_PnL=("Gross P&L (₹)","sum"),Charges=("Charges & Taxes (₹)","sum"),
+                Net_PnL=("Net P&L (₹)","sum"),Max_Drawdown=("Max Drawdown (₹)","max"))
+            st.dataframe(side_summary,use_container_width=True,hide_index=True)
+            st.markdown("##### NIFTY vs BANKNIFTY")
+            index_part=auto_saved[auto_saved["Stock"].isin(["NIFTY","BANKNIFTY"])]
+            if index_part.empty: st.info("NIFTY/BANKNIFTY did not produce valid selected-contract history in this scan.")
+            else: st.dataframe(index_part,use_container_width=True,hide_index=True)
+            st.markdown("##### Strategy-wise BUY / SELL accuracy")
+            strategy_summary=auto_saved.groupby(["Horizon (sessions)","Underlying Signal","Option Side","Strategy"],as_index=False).agg(
+                Stocks=("Stock","nunique"),Trades=("Trades","sum"),Wins=("Wins","sum"),Losses=("Losses","sum"),Net_PnL=("Net P&L (₹)","sum"))
+            strategy_summary["Accuracy (%)"]=(strategy_summary["Wins"]/strategy_summary["Trades"].replace(0,pd.NA)*100).round(2)
+            st.dataframe(strategy_summary,use_container_width=True,hide_index=True)
+            st.download_button("Download all horizon metrics",auto_saved.to_csv(index=False),"arvi_multi_stock_horizon_metrics.csv","text/csv")
         else:
-            st.warning("No unique stock produced a valid historical option trade. Review the scan counts and option contract history availability.")
+            st.warning("No selected option contract produced enough daily candles and at least one valid EMA trade.")
+        missing=st.session_state.get("paper_multi_availability")
+        if missing is not None and not missing.empty:
+            with st.expander("Contracts / horizons with insufficient history"):
+                st.dataframe(missing,use_container_width=True,hide_index=True)
     else:
-        st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST. The old one-stock selector is no longer used in this section.")
+        st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST. ARVI scans the NSE F&O universe and compares available 30/60/90-session results.")
     st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

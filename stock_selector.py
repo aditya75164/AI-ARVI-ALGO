@@ -265,3 +265,60 @@ def scan_stock_universe(kite, market="FNO", max_candidates=35):
 def scan_fno_stock_candidates(kite,max_stocks=25):
     frame,_=scan_stock_universe(kite,"FNO",max_candidates=max_stocks)
     return frame.to_dict("records")
+
+
+def fetch_fno_underlying_backtest_data(kite, lookback_days=240):
+    """Fetch genuine NSE cash/index daily candles for the complete active F&O universe.
+
+    Returns per-underlying candles, current indicator signals and explicit
+    availability diagnostics. Does not depend on expired option history.
+    """
+    now=datetime.now(IST); start=now-timedelta(days=int(lookback_days))
+    universe=_universe(kite,"FNO")
+    if not universe:
+        return {},pd.DataFrame(),{"universe":0,"fetched":0,"usable_30":0,"usable_60":0,
+            "usable_90":0,"indicator_scored":0,"errors":0},pd.DataFrame()
+    # Prioritize current turnover where quotes are available, but do not drop
+    # the rest of the F&O universe if quote lookup is unavailable.
+    ranked=_quote_turnover(kite,universe)
+    rank_map={symbol:i for i,(symbol,*_) in enumerate(ranked)}
+    ordered=sorted(universe,key=lambda item:rank_map.get(item[0],len(rank_map)+universe.index(item)))
+    candles_by_stock={}; signal_rows=[]; diagnostics=[]
+    stats={"universe":len(universe),"fetched":0,"usable_30":0,"usable_60":0,
+           "usable_90":0,"indicator_scored":0,"errors":0}
+    for symbol,token in ordered:
+        status="OK"; reason=""
+        try:
+            candles=kite.historical_data(token,start,now,"day")
+            stats["fetched"]+=1
+            frame=pd.DataFrame(candles or [])
+            if frame.empty:
+                status="NO_CANDLES"; reason="Kite returned no underlying daily candles"
+            elif not {"date","open","high","low","close"}.issubset(frame.columns):
+                status="INVALID_SCHEMA"; reason="Daily candles missing date/open/high/low/close"
+            else:
+                frame["date"]=pd.to_datetime(frame["date"],errors="coerce")
+                frame=frame.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+                count=len(frame)
+                if count>=30: stats["usable_30"]+=1
+                if count>=60: stats["usable_60"]+=1
+                if count>=90: stats["usable_90"]+=1
+                if count<30:
+                    status="INSUFFICIENT_HISTORY"; reason=f"Only {count} daily candles; minimum 30 required"
+                else:
+                    candles_by_stock[symbol]=frame
+                    scored=score_daily_candles(candles,symbol,"FNO")
+                    if scored:
+                        stats["indicator_scored"]+=1
+                        signal_rows.append(scored)
+                    else:
+                        reason="Historical candles available; current indicator score unavailable (requires longer valid OHLCV history)"
+            diagnostics.append({"Stock":symbol,"Candles":len(frame) if "frame" in locals() and isinstance(frame,pd.DataFrame) else 0,
+                                "Status":status,"Reason":reason})
+        except Exception as exc:
+            stats["errors"]+=1
+            diagnostics.append({"Stock":symbol,"Candles":0,"Status":"FETCH_ERROR","Reason":str(exc)[:220]})
+    stats["directional_signals"]=sum(1 for row in signal_rows if row.get("Signal") in ("BUY","SELL"))
+    stats["wait_signals"]=sum(1 for row in signal_rows if row.get("Signal")=="WAIT")
+    stats["data_source"]="Kite NSE cash/index daily candles"
+    return candles_by_stock,pd.DataFrame(signal_rows),stats,pd.DataFrame(diagnostics)

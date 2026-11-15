@@ -165,3 +165,95 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
             "losses":len(trades)-wins,"win_rate_pct":(wins/len(trades)*100 if trades else 0),
             "net_points_per_unit":net,
             "note":"Historical option-premium simulation only; excludes brokerage, taxes, slippage, bid-ask spread and execution delay."}
+
+
+def calculate_backtest_metrics(result, lot_size=1, brokerage_per_order=20.0,
+                               exchange_txn_rate=0.0003553, stt_sell_rate=0.0015,
+                               stamp_buy_rate=0.00003, sebi_rate=0.000001,
+                               gst_rate=0.18, slippage_per_unit=0.0):
+    """Calculate approximate NSE option-buy trade costs and closed-trade metrics.
+
+    Zerodha-style defaults: ₹20 per executed order; NSE option transaction
+    charge 0.03553%; option sell-side STT 0.15%; buy-side stamp duty 0.003%;
+    SEBI ₹10/crore; GST 18% on brokerage + exchange + SEBI charges.
+    Change defaults for a different broker/contract note. Slippage is optional.
+    """
+    trades=list((result or {}).get("trades") or [])
+    lot=max(1,int(lot_size))
+    enriched=[]
+    gross_wins=0.0
+    gross_losses=0.0
+    cumulative=0.0
+    peak=0.0
+    max_drawdown=0.0
+    total_costs=0.0
+    for trade in trades:
+        entry=float(trade.get("entry") or 0)
+        exit_price=float(trade.get("exit") or 0)
+        if entry<=0 or exit_price<=0:
+            continue
+        buy_turnover=entry*lot
+        sell_turnover=exit_price*lot
+        turnover=buy_turnover+sell_turnover
+        brokerage=2.0*float(brokerage_per_order)
+        exchange=turnover*float(exchange_txn_rate)
+        sebi=turnover*float(sebi_rate)
+        gst=(brokerage+exchange+sebi)*float(gst_rate)
+        stt=sell_turnover*float(stt_sell_rate)
+        stamp=buy_turnover*float(stamp_buy_rate)
+        slippage=2.0*lot*float(slippage_per_unit)
+        charges=brokerage+exchange+sebi+gst+stt+stamp+slippage
+        gross=(exit_price-entry)*lot
+        net=gross-charges
+        item=dict(trade)
+        item.update({"quantity":lot,"gross_pnl":round(gross,2),
+                     "brokerage":round(brokerage,2),"exchange_charges":round(exchange,2),
+                     "stt":round(stt,2),"stamp_duty":round(stamp,2),
+                     "sebi_charges":round(sebi,4),"gst":round(gst,2),
+                     "slippage":round(slippage,2),"total_charges":round(charges,2),
+                     "net_pnl":round(net,2),
+                     "net_return_pct":round(net/(buy_turnover+charges)*100,3)})
+        enriched.append(item)
+        total_costs+=charges
+        if gross>0: gross_wins+=gross
+        elif gross<0: gross_losses+=abs(gross)
+        cumulative+=net
+        peak=max(peak,cumulative)
+        max_drawdown=max(max_drawdown,peak-cumulative)
+    wins=sum(t["net_pnl"]>0 for t in enriched)
+    losses=sum(t["net_pnl"]<0 for t in enriched)
+    net_total=sum(t["net_pnl"] for t in enriched)
+    profit_factor=(gross_wins/gross_losses if gross_losses>0 else (float("inf") if gross_wins>0 else 0.0))
+    return {
+        "trades":enriched,"trade_count":len(enriched),"wins":wins,"losses":losses,
+        "win_rate_pct":round(wins/len(enriched)*100,2) if enriched else 0.0,
+        "gross_pnl":round(sum(t["gross_pnl"] for t in enriched),2),
+        "total_charges":round(total_costs,2),"net_pnl":round(net_total,2),
+        "max_drawdown":round(max_drawdown,2),
+        "profit_factor":round(profit_factor,3) if profit_factor!=float("inf") else "∞",
+        "note":"Estimated Zerodha NSE option charges; excludes market impact and any unconfigured slippage."
+    }
+
+
+def compare_backtest_horizons(candles, horizons=(30,60,90), **strategy_kwargs):
+    """Run the same strategy over the last N available trading sessions."""
+    import pandas as pd
+    frame=candles.copy()
+    frame.columns=[str(x).lower() for x in frame.columns]
+    if "date" in frame.columns:
+        frame["date"]=pd.to_datetime(frame["date"],errors="coerce")
+        frame=frame.dropna(subset=["date"]).sort_values("date").set_index("date")
+    frame=frame.sort_index()
+    output={}
+    for days in horizons:
+        sample=frame.tail(int(days))
+        if len(sample)<30:
+            output[int(days)]={"available":False,"sessions_available":len(sample),
+                               "reason":f"Only {len(sample)} trading sessions available; minimum 30 required"}
+            continue
+        try:
+            raw=backtest_ema_strategy(sample,**strategy_kwargs)
+            output[int(days)]={"available":True,"sessions_available":len(sample),**raw}
+        except Exception as exc:
+            output[int(days)]={"available":False,"sessions_available":len(sample),"reason":str(exc)}
+    return output

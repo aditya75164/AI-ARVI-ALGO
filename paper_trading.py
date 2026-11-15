@@ -111,8 +111,8 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
     If stop and target are both touched in one candle, stop is assumed first.
     """
     import pandas as pd
-    if candles is None or len(candles) < max(int(slow) + 20, 40):
-        raise ValueError("At least 40 historical candles are required for EMA/RSI/ADX warm-up")
+    if candles is None or len(candles) < max(int(slow) + 2, 30):
+        raise ValueError("At least 30 historical candles are required for EMA/RSI/ADX warm-up")
     if min(int(fast), int(slow)) <= 0 or int(fast) >= int(slow):
         raise ValueError("EMA fast period must be positive and smaller than slow period")
     if min(float(stop_pct), float(target_pct), float(trailing_pct)) <= 0:
@@ -129,7 +129,7 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(subset=list(required)).sort_index()
     frame = frame[(frame["open"] > 0) & (frame["high"] > 0) & (frame["low"] > 0) & (frame["close"] > 0)]
-    if len(frame) < max(int(slow) + 20, 40):
+    if len(frame) < max(int(slow) + 2, 30):
         raise ValueError("Not enough valid OHLC candles after cleaning")
     close, high, low = frame["close"], frame["high"], frame["low"]
     frame["ema_fast"] = close.ewm(span=int(fast), adjust=False).mean()
@@ -321,8 +321,8 @@ def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
     target are both touched, the conservative stop-first assumption is used.
     """
     import pandas as pd
-    if candles is None or len(candles) < max(int(slow)+20, 40):
-        raise ValueError("At least 40 daily OHLC candles are required for EMA/RSI/ADX warm-up")
+    if candles is None or len(candles) < max(int(slow)+2, 30):
+        raise ValueError("At least 30 daily OHLC candles are required for EMA/RSI/ADX warm-up")
     if min(int(fast), int(slow)) <= 0 or int(fast) >= int(slow):
         raise ValueError("EMA fast period must be positive and smaller than slow period")
     if min(float(stop_pct), float(target_pct), float(trailing_pct)) <= 0:
@@ -339,7 +339,7 @@ def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(subset=list(required)).sort_index()
     frame = frame[(frame["open"] > 0) & (frame["high"] > 0) & (frame["low"] > 0) & (frame["close"] > 0)]
-    if len(frame) < max(int(slow)+20, 40):
+    if len(frame) < max(int(slow)+2, 30):
         raise ValueError("Not enough valid daily OHLC candles after cleaning")
     close, high, low = frame["close"], frame["high"], frame["low"]
     frame["ema_fast"] = close.ewm(span=int(fast), adjust=False).mean()

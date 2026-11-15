@@ -153,7 +153,8 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
     dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, float("nan"))
     frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     frame["cross_up"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
-    frame["entry_ok"] = frame["cross_up"] & (frame["rsi"] >= float(min_rsi)) & (frame["adx"] >= float(min_adx))
+    frame["cross_up_recent"] = frame["cross_up"].rolling(5, min_periods=1).max().astype(bool)
+    frame["entry_ok"] = frame["cross_up_recent"] & (frame["rsi"] >= float(min_rsi)) & (frame["adx"] >= float(min_adx))
     trades = []
     position = None
     for i in range(1, len(frame)-1):
@@ -363,8 +364,10 @@ def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
     frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     frame["bull_cross"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
     frame["bear_cross"] = (frame["ema_fast"] < frame["ema_slow"]) & (frame["ema_fast"].shift(1) >= frame["ema_slow"].shift(1))
-    frame["buy_signal"] = frame["bull_cross"] & (frame["rsi"] >= float(rsi_buy_min)) & (frame["adx"] >= float(min_adx)) & (plus_di > minus_di)
-    frame["sell_signal"] = frame["bear_cross"] & (frame["rsi"] <= float(rsi_sell_max)) & (frame["adx"] >= float(min_adx)) & (minus_di > plus_di)
+    frame["bull_cross_recent"] = frame["bull_cross"].rolling(5, min_periods=1).max().astype(bool)
+    frame["bear_cross_recent"] = frame["bear_cross"].rolling(5, min_periods=1).max().astype(bool)
+    frame["buy_signal"] = frame["bull_cross_recent"] & (frame["rsi"] >= float(rsi_buy_min)) & (frame["adx"] >= float(min_adx)) & (plus_di > minus_di)
+    frame["sell_signal"] = frame["bear_cross_recent"] & (frame["rsi"] <= float(rsi_sell_max)) & (frame["adx"] >= float(min_adx)) & (minus_di > plus_di)
     trades = []
     position = None
     for i in range(1, len(frame)-1):

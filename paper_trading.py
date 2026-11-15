@@ -246,9 +246,15 @@ def compare_backtest_horizons(candles, horizons=(30,60,90), **strategy_kwargs):
     frame=frame.sort_index()
     output={}
     for days in horizons:
-        sample=frame.tail(int(days))
+        requested=int(days)
+        available=len(frame)
+        if available<requested:
+            output[requested]={"available":False,"sessions_available":available,
+                               "reason":f"Only {available} trading sessions available; {requested} required"}
+            continue
+        sample=frame.tail(requested)
         if len(sample)<30:
-            output[int(days)]={"available":False,"sessions_available":len(sample),
+            output[requested]={"available":False,"sessions_available":len(sample),
                                "reason":f"Only {len(sample)} trading sessions available; minimum 30 required"}
             continue
         try:

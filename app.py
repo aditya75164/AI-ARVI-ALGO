@@ -612,11 +612,19 @@ with tabs[8]:
                                 "Data detail":raw.get("reason","Insufficient daily candles")})
                             continue
                         metrics=calculate_equity_backtest_metrics(raw,quantity=1)
+                        buy_trades=[t for t in metrics["trades"] if t.get("direction")=="BUY"]
+                        sell_trades=[t for t in metrics["trades"] if t.get("direction")=="SELL"]
+                        buy_wins=sum(t["net_pnl"]>0 for t in buy_trades)
+                        sell_wins=sum(t["net_pnl"]>0 for t in sell_trades)
                         underlying_rows.append({"Horizon (sessions)":horizon,"Stock":symbol,
                             "Signal":signal.get("Signal","UNRANKED"),"Score":signal.get("Score",None),
                             "RSI":signal.get("RSI",None),"Relative Volume":signal.get("Relative Volume",None),
                             "Trades":metrics["trade_count"],"Wins":metrics["wins"],"Losses":metrics["losses"],
-                            "Accuracy (%)":metrics["win_rate_pct"],"Gross P&L / share (₹)":metrics["gross_pnl"],
+                            "Accuracy (%)":metrics["win_rate_pct"],"BUY Trades":len(buy_trades),
+                            "BUY Wins":buy_wins,"BUY Accuracy (%)":round(buy_wins/len(buy_trades)*100,2) if buy_trades else 0.0,
+                            "SELL Trades":len(sell_trades),"SELL Wins":sell_wins,
+                            "SELL Accuracy (%)":round(sell_wins/len(sell_trades)*100,2) if sell_trades else 0.0,
+                            "Gross P&L / share (₹)":metrics["gross_pnl"],
                             "Estimated charges (₹)":metrics["total_charges"],"Net P&L / share (₹)":metrics["net_pnl"],
                             "Max Drawdown / share (₹)":metrics["max_drawdown"],"Profit Factor":metrics["profit_factor"],
                             "Status":"TESTED" if metrics["trade_count"] else "NO_VALID_CROSSOVER",
@@ -702,6 +710,20 @@ with tabs[8]:
                 subset=underlying_saved[underlying_saved["Horizon (sessions)"].eq(horizon)]
                 if subset.empty: st.info("No records for this horizon.")
                 else: st.dataframe(subset,use_container_width=True,hide_index=True)
+            st.markdown("###### NIFTY vs BANKNIFTY underlying comparison")
+            index_compare=underlying_saved[underlying_saved["Stock"].isin(["NIFTY","BANKNIFTY"])]
+            if index_compare.empty:
+                st.info("NIFTY/BANKNIFTY underlying history was not returned by this scan.")
+            else:
+                st.dataframe(index_compare,use_container_width=True,hide_index=True)
+            st.markdown("###### BUY vs SELL strategy accuracy")
+            direction_accuracy=underlying_saved.groupby(["Horizon (sessions)"],as_index=False).agg(
+                BUY_Trades=("BUY Trades","sum"),BUY_Wins=("BUY Wins","sum"),
+                SELL_Trades=("SELL Trades","sum"),SELL_Wins=("SELL Wins","sum"),
+                Net_PnL=("Net P&L / share (₹)","sum"))
+            direction_accuracy["BUY Accuracy (%)"]=(direction_accuracy["BUY_Wins"]/direction_accuracy["BUY_Trades"].replace(0,pd.NA)*100).round(2)
+            direction_accuracy["SELL Accuracy (%)"]=(direction_accuracy["SELL_Wins"]/direction_accuracy["SELL_Trades"].replace(0,pd.NA)*100).round(2)
+            st.dataframe(direction_accuracy,use_container_width=True,hide_index=True)
             st.download_button("Download underlying backtest CSV",underlying_saved.to_csv(index=False),"arvi_underlying_30_60_90_backtest.csv","text/csv")
     option_saved=st.session_state.get("paper_multi_options")
     if option_saved is not None:

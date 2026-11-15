@@ -263,3 +263,118 @@ def compare_backtest_horizons(candles, horizons=(30,60,90), **strategy_kwargs):
         except Exception as exc:
             output[int(days)]={"available":False,"sessions_available":len(sample),"reason":str(exc)}
     return output
+
+
+def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
+                                    target_pct=4.0, trailing_pct=1.0):
+    """Long/short EMA crossover simulation on underlying daily OHLC candles.
+
+    Signals are evaluated at candle close and filled at the next candle open.
+    If stop and target are both touched in one candle, stop is assumed first.
+    This is a research simulation, not an executable trading recommendation.
+    """
+    import pandas as pd
+    if candles is None or len(candles)<max(int(slow)+2,30):
+        raise ValueError("At least 30 daily OHLC candles are required")
+    frame=candles.copy()
+    frame.columns=[str(x).lower() for x in frame.columns]
+    if "date" in frame.columns:
+        frame["date"]=pd.to_datetime(frame["date"],errors="coerce")
+        frame=frame.dropna(subset=["date"]).sort_values("date").set_index("date")
+    required={"open","high","low","close"}
+    if not required.issubset(frame.columns):
+        raise ValueError("Underlying candles must include open/high/low/close")
+    frame=frame.sort_index()
+    for col in required:
+        frame[col]=pd.to_numeric(frame[col],errors="coerce")
+    frame=frame.dropna(subset=list(required))
+    frame["ema_fast"]=frame["close"].ewm(span=int(fast),adjust=False).mean()
+    frame["ema_slow"]=frame["close"].ewm(span=int(slow),adjust=False).mean()
+    frame["bull_cross"]=(frame["ema_fast"]>frame["ema_slow"]) & (frame["ema_fast"].shift(1)<=frame["ema_slow"].shift(1))
+    frame["bear_cross"]=(frame["ema_fast"]<frame["ema_slow"]) & (frame["ema_fast"].shift(1)>=frame["ema_slow"].shift(1))
+    trades=[]; position=None
+    for i in range(1,len(frame)-1):
+        row=frame.iloc[i]; nxt=frame.iloc[i+1]
+        signal="BUY" if bool(row["bull_cross"]) else "SELL" if bool(row["bear_cross"]) else None
+        if position is None and signal:
+            entry=float(nxt["open"])
+            if entry>0:
+                direction=1 if signal=="BUY" else -1
+                position={"direction":direction,"signal":signal,"entry":entry,
+                          "entry_index":i+1,"stop":entry*(1-stop_pct/100) if direction==1 else entry*(1+stop_pct/100),
+                          "target":entry*(1+target_pct/100) if direction==1 else entry*(1-target_pct/100),
+                          "peak":entry,"trough":entry}
+            continue
+        if position is None: continue
+        high=float(row["high"]); low=float(row["low"]); direction=position["direction"]
+        position["peak"]=max(position["peak"],high)
+        position["trough"]=min(position["trough"],low)
+        if direction==1:
+            position["stop"]=max(position["stop"],position["peak"]*(1-trailing_pct/100))
+            stop_hit=low<=position["stop"]; target_hit=high>=position["target"]
+            reverse=bool(row["bear_cross"])
+        else:
+            position["stop"]=min(position["stop"],position["trough"]*(1+trailing_pct/100))
+            stop_hit=high>=position["stop"]; target_hit=low<=position["target"]
+            reverse=bool(row["bull_cross"])
+        exit_price=None; reason=None
+        if stop_hit: exit_price=position["stop"]; reason="STOP_OR_TRAIL"
+        elif target_hit: exit_price=position["target"]; reason="TARGET"
+        elif reverse: exit_price=float(nxt["open"]); reason="REVERSE_CROSS"
+        if exit_price is not None and exit_price>0:
+            pnl=(exit_price-position["entry"])*direction
+            trades.append({"direction":position["signal"],"entry_time":str(frame.index[position["entry_index"]]),
+                           "exit_time":str(frame.index[i]),"entry":position["entry"],"exit":exit_price,
+                           "return_pct":pnl/position["entry"]*100,"pnl_per_unit":pnl,"reason":reason})
+            position=None
+    if position is not None:
+        last=float(frame.iloc[-1]["close"]); direction=position["direction"]
+        pnl=(last-position["entry"])*direction
+        trades.append({"direction":position["signal"],"entry_time":str(frame.index[position["entry_index"]]),
+                       "exit_time":str(frame.index[-1]),"entry":position["entry"],"exit":last,
+                       "return_pct":pnl/position["entry"]*100,"pnl_per_unit":pnl,"reason":"END_OF_DATA"})
+    wins=sum(t["pnl_per_unit"]>0 for t in trades)
+    return {"trades":trades,"trade_count":len(trades),"wins":wins,"losses":len(trades)-wins,
+            "win_rate_pct":round(wins/len(trades)*100,2) if trades else 0.0,
+            "gross_points_per_share":round(sum(t["pnl_per_unit"] for t in trades),4),
+            "note":"Underlying directional simulation; BUY is long and SELL is short. No option premium is inferred."}
+
+
+def calculate_equity_backtest_metrics(result, brokerage_per_order=20.0,
+                                      exchange_txn_rate=0.000297, stt_sell_rate=0.00025,
+                                      stamp_buy_rate=0.00003, sebi_rate=0.000001,
+                                      gst_rate=0.18, quantity=1):
+    """Approximate NSE intraday-equity costs for one share/quantity per trade."""
+    trades=list((result or {}).get("trades") or [])
+    qty=max(1,int(quantity)); enriched=[]; gross_wins=0.0; gross_losses=0.0
+    cumulative=0.0; peak=0.0; max_dd=0.0; total_charges=0.0
+    for trade in trades:
+        entry=float(trade.get("entry") or 0); exit_price=float(trade.get("exit") or 0)
+        if entry<=0 or exit_price<=0: continue
+        direction=1 if trade.get("direction","BUY")=="BUY" else -1
+        buy_turnover=(entry if direction==1 else exit_price)*qty
+        sell_turnover=(exit_price if direction==1 else entry)*qty
+        turnover=buy_turnover+sell_turnover
+        brokerage=2*float(brokerage_per_order)
+        exchange=turnover*float(exchange_txn_rate); sebi=turnover*float(sebi_rate)
+        gst=(brokerage+exchange+sebi)*float(gst_rate)
+        stt=sell_turnover*float(stt_sell_rate); stamp=buy_turnover*float(stamp_buy_rate)
+        charges=brokerage+exchange+sebi+gst+stt+stamp
+        gross=(exit_price-entry)*direction*qty; net=gross-charges
+        item=dict(trade); item.update({"quantity":qty,"gross_pnl":round(gross,2),
+            "total_charges":round(charges,2),"net_pnl":round(net,2),
+            "net_return_pct":round(net/max(buy_turnover,0.01)*100,3)})
+        enriched.append(item); total_charges+=charges
+        if gross>0: gross_wins+=gross
+        elif gross<0: gross_losses+=abs(gross)
+        cumulative+=net; peak=max(peak,cumulative); max_dd=max(max_dd,peak-cumulative)
+    wins=sum(t["net_pnl"]>0 for t in enriched)
+    pf=gross_wins/gross_losses if gross_losses else (float("inf") if gross_wins else 0.0)
+    return {"trades":enriched,"trade_count":len(enriched),"wins":wins,
+            "losses":sum(t["net_pnl"]<0 for t in enriched),
+            "win_rate_pct":round(wins/len(enriched)*100,2) if enriched else 0.0,
+            "gross_pnl":round(sum(t["gross_pnl"] for t in enriched),2),
+            "total_charges":round(total_charges,2),"net_pnl":round(sum(t["net_pnl"] for t in enriched),2),
+            "max_drawdown":round(max_dd,2),
+            "profit_factor":round(pf,3) if pf!=float("inf") else float("inf"),
+            "note":"Estimated intraday-equity charges; quantity defaults to one share. Confirm exact taxes with broker contract note."}

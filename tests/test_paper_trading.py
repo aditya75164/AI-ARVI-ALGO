@@ -80,3 +80,32 @@ def test_horizon_comparison_reports_insufficient_history():
     assert result[30]["available"] is True
     assert result[60]["available"] is False
     assert result[90]["available"] is False
+
+
+def test_underlying_directional_backtest_returns_trade_schema():
+    import pandas as pd
+    from paper_trading import backtest_directional_underlying, calculate_equity_backtest_metrics
+    # Alternating trend regimes create both bullish and bearish EMA crosses.
+    close=[100+i*0.8 for i in range(45)]+[136-i*1.1 for i in range(45)]+[86+i*1.2 for i in range(50)]
+    frame=pd.DataFrame({"date":pd.date_range("2026-01-01",periods=len(close),freq="B"),
+        "open":close,"high":[x+1 for x in close],"low":[x-1 for x in close],"close":close})
+    result=backtest_directional_underlying(frame,fast=5,slow=12,stop_pct=4,target_pct=8,trailing_pct=2)
+    assert "trades" in result
+    assert result["trade_count"]>=1
+    assert all(t["direction"] in ("BUY","SELL") for t in result["trades"])
+    metrics=calculate_equity_backtest_metrics(result)
+    assert metrics["trade_count"]==result["trade_count"]
+    assert metrics["total_charges"]>0
+    assert "net_pnl" in metrics
+
+
+def test_underlying_horizon_comparison_requires_exact_sessions():
+    import pandas as pd
+    from paper_trading import compare_underlying_horizons
+    close=[100+i*0.5 for i in range(100)]
+    frame=pd.DataFrame({"date":pd.date_range("2026-01-01",periods=100,freq="B"),
+        "open":close,"high":[x+1 for x in close],"low":[x-1 for x in close],"close":close})
+    result=compare_underlying_horizons(frame,horizons=(30,60,90))
+    assert result[30]["available"] is True
+    assert result[60]["available"] is True
+    assert result[90]["available"] is True

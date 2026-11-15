@@ -230,7 +230,7 @@ def calculate_backtest_metrics(result, lot_size=1, brokerage_per_order=20.0,
         "gross_pnl":round(sum(t["gross_pnl"] for t in enriched),2),
         "total_charges":round(total_costs,2),"net_pnl":round(net_total,2),
         "max_drawdown":round(max_drawdown,2),
-        "profit_factor":round(profit_factor,3) if profit_factor!=float("inf") else "∞",
+        "profit_factor":round(profit_factor,3) if profit_factor!=float("inf") else float("inf"),
         "note":"Estimated Zerodha NSE option charges; excludes market impact and any unconfigured slippage."
     }
 

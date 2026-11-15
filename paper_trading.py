@@ -101,70 +101,115 @@ def can_open_trade(trades, max_trades, daily_loss_limit):
     return True, "Risk checks passed."
 
 
-def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0, trailing_pct=1.0):
-    """Long-premium EMA cross backtest on historical option candles.
-    Signal is evaluated at candle close; entry/exit fill is next candle open.
-    No brokerage, taxes, slippage or latency are included.
+def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0,
+                        trailing_pct=1.0, min_adx=18.0, min_rsi=52.0):
+    """Long-option premium backtest with EMA + RSI + ADX confirmation.
+
+    Signal is evaluated on a completed candle and filled at the next candle open.
+    Existing stop/target are checked before updating a trailing stop, so a candle's
+    high cannot retroactively tighten the stop used against that same candle's low.
+    If stop and target are both touched in one candle, stop is assumed first.
     """
     import pandas as pd
-    if candles is None or len(candles) < max(slow + 2, 30):
-        raise ValueError("At least 30 historical candles are required")
+    if candles is None or len(candles) < max(int(slow) + 20, 40):
+        raise ValueError("At least 40 historical candles are required for EMA/RSI/ADX warm-up")
+    if min(int(fast), int(slow)) <= 0 or int(fast) >= int(slow):
+        raise ValueError("EMA fast period must be positive and smaller than slow period")
+    if min(float(stop_pct), float(target_pct), float(trailing_pct)) <= 0:
+        raise ValueError("Stop, target and trailing percentages must be positive")
     frame = candles.copy()
     frame.columns = [str(x).lower() for x in frame.columns]
-    # Kite historical_data returns timestamps in a date column; preserve them.
     if "date" in frame.columns:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-        if frame["date"].notna().all():
-            frame = frame.set_index("date")
+        frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
     required = {"open", "high", "low", "close"}
     if not required.issubset(frame.columns):
         raise ValueError("Historical candles must include open/high/low/close")
-    frame["ema_fast"] = frame["close"].ewm(span=int(fast), adjust=False).mean()
-    frame["ema_slow"] = frame["close"].ewm(span=int(slow), adjust=False).mean()
+    for col in required:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame.dropna(subset=list(required)).sort_index()
+    frame = frame[(frame["open"] > 0) & (frame["high"] > 0) & (frame["low"] > 0) & (frame["close"] > 0)]
+    if len(frame) < max(int(slow) + 20, 40):
+        raise ValueError("Not enough valid OHLC candles after cleaning")
+    close, high, low = frame["close"], frame["high"], frame["low"]
+    frame["ema_fast"] = close.ewm(span=int(fast), adjust=False).mean()
+    frame["ema_slow"] = close.ewm(span=int(slow), adjust=False).mean()
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    frame["rsi"] = 100 - (100 / (1 + rs))
+    frame.loc[(loss == 0) & (gain > 0), "rsi"] = 100.0
+    frame.loc[(gain == 0) & (loss > 0), "rsi"] = 0.0
+    prev_close = close.shift(1)
+    tr = pd.concat([(high-low), (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    plus_di = 100 * plus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr.replace(0, float("nan"))
+    minus_di = 100 * minus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr.replace(0, float("nan"))
+    dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, float("nan"))
+    frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     frame["cross_up"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
-    trades=[]
-    position=None
-    for i in range(1,len(frame)-1):
-        row=frame.iloc[i]
-        nxt=frame.iloc[i+1]
-        if position is None and bool(row["cross_up"]):
-            entry=float(nxt["open"])
-            if entry>0:
-                position={"entry":entry,"entry_index":i+1,"stop":entry*(1-stop_pct/100),
-                          "target":entry*(1+target_pct/100),"peak":entry}
+    frame["entry_ok"] = frame["cross_up"] & (frame["rsi"] >= float(min_rsi)) & (frame["adx"] >= float(min_adx))
+    trades = []
+    position = None
+    for i in range(1, len(frame)-1):
+        row = frame.iloc[i]
+        nxt = frame.iloc[i+1]
+        if position is None:
+            if bool(row["entry_ok"]):
+                entry = float(nxt["open"])
+                if entry > 0:
+                    position = {"entry": entry, "entry_index": i+1,
+                                "stop": entry*(1-float(stop_pct)/100),
+                                "target": entry*(1+float(target_pct)/100),
+                                "peak": entry}
             continue
-        if position is not None:
-            high=float(row["high"]); low=float(row["low"])
-            position["peak"]=max(position["peak"],high)
-            position["stop"]=max(position["stop"],position["peak"]*(1-trailing_pct/100))
-            exit_price=None; reason=None
-            # Conservative same-candle rule: if stop and target both touched, assume stop first.
-            if low <= position["stop"]:
-                exit_price=position["stop"]; reason="STOP_OR_TRAIL"
-            elif high >= position["target"]:
-                exit_price=position["target"]; reason="TARGET"
-            elif not bool(row["ema_fast"] > row["ema_slow"]):
-                exit_price=float(nxt["open"]); reason="EMA_EXIT"
-            if exit_price is not None and exit_price>0:
-                pnl=exit_price-position["entry"]
-                trades.append({"entry_time":str(frame.index[position["entry_index"]]),
-                               "exit_time":str(frame.index[i]),"entry":position["entry"],
-                               "exit":exit_price,"return_pct":pnl/position["entry"]*100,
-                               "pnl_per_unit":pnl,"reason":reason})
-                position=None
+        # The current candle is the first full candle after entry. Test the
+        # stop that existed before this candle; update trailing only afterwards.
+        o, h, l = float(row["open"]), float(row["high"]), float(row["low"])
+        old_stop = float(position["stop"])
+        exit_price = None
+        reason = None
+        if o <= old_stop:
+            exit_price, reason = o, "GAP_STOP"
+        elif o >= position["target"]:
+            exit_price, reason = position["target"], "TARGET"
+        elif l <= old_stop:
+            exit_price, reason = old_stop, "STOP_OR_TRAIL"
+        elif h >= position["target"]:
+            exit_price, reason = position["target"], "TARGET"
+        elif not bool(row["ema_fast"] > row["ema_slow"]):
+            exit_price, reason = float(nxt["open"]), "EMA_EXIT"
+        if exit_price is None:
+            position["peak"] = max(float(position["peak"]), h)
+            new_trail = position["peak"] * (1-float(trailing_pct)/100)
+            position["stop"] = max(old_stop, new_trail)
+        if exit_price is not None and exit_price > 0:
+            pnl = exit_price-position["entry"]
+            trades.append({"entry_time": str(frame.index[position["entry_index"]]),
+                           "exit_time": str(frame.index[i]), "entry": position["entry"],
+                           "exit": exit_price, "return_pct": pnl/position["entry"]*100,
+                           "pnl_per_unit": pnl, "reason": reason})
+            position = None
     if position is not None:
-        last=float(frame.iloc[-1]["close"])
-        pnl=last-position["entry"]
-        trades.append({"entry_time":str(frame.index[position["entry_index"]]),
-                       "exit_time":str(frame.index[-1]),"entry":position["entry"],
-                       "exit":last,"return_pct":pnl/position["entry"]*100,
-                       "pnl_per_unit":pnl,"reason":"END_OF_DATA"})
-    wins=sum(t["pnl_per_unit"]>0 for t in trades)
-    net=sum(t["pnl_per_unit"] for t in trades)
-    return {"trades":trades,"trade_count":len(trades),"wins":wins,
-            "losses":len(trades)-wins,"win_rate_pct":(wins/len(trades)*100 if trades else 0),
-            "net_points_per_unit":net,
-            "note":"Historical option-premium simulation only; excludes brokerage, taxes, slippage, bid-ask spread and execution delay."}
+        last = float(frame.iloc[-1]["close"])
+        pnl = last-position["entry"]
+        trades.append({"entry_time": str(frame.index[position["entry_index"]]),
+                       "exit_time": str(frame.index[-1]), "entry": position["entry"],
+                       "exit": last, "return_pct": pnl/position["entry"]*100,
+                       "pnl_per_unit": pnl, "reason": "END_OF_DATA"})
+    wins = sum(t["pnl_per_unit"] > 0 for t in trades)
+    net = sum(t["pnl_per_unit"] for t in trades)
+    return {"trades": trades, "trade_count": len(trades), "wins": wins,
+            "losses": len(trades)-wins,
+            "win_rate_pct": round(wins/len(trades)*100, 2) if trades else 0.0,
+            "net_points_per_unit": round(net, 4),
+            "indicator_rule": f"EMA {fast}/{slow} bullish crossover + RSI(14) >= {min_rsi} + ADX(14) >= {min_adx}",
+            "note": "Historical option-premium simulation only; excludes brokerage, taxes, slippage, bid-ask spread and execution delay."}
 
 
 def calculate_backtest_metrics(result, lot_size=1, brokerage_per_order=20.0,
@@ -266,78 +311,124 @@ def compare_backtest_horizons(candles, horizons=(30,60,90), **strategy_kwargs):
 
 
 def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
-                                    target_pct=4.0, trailing_pct=1.0):
-    """Long/short EMA crossover simulation on underlying daily OHLC candles.
+                                    target_pct=4.0, trailing_pct=1.0,
+                                    min_adx=18.0, rsi_buy_min=52.0, rsi_sell_max=48.0):
+    """Long/short daily EMA crossover with RSI/ADX trend confirmation.
 
-    Signals are evaluated at candle close and filled at the next candle open.
-    If stop and target are both touched in one candle, stop is assumed first.
-    This is a research simulation, not an executable trading recommendation.
+    Signals use completed daily candles and enter at the next session open.
+    Stops are evaluated using the stop known before the current candle; a new
+    trailing stop is calculated only after the candle survives. When stop and
+    target are both touched, the conservative stop-first assumption is used.
     """
     import pandas as pd
-    if candles is None or len(candles)<max(int(slow)+2,30):
-        raise ValueError("At least 30 daily OHLC candles are required")
-    frame=candles.copy()
-    frame.columns=[str(x).lower() for x in frame.columns]
+    if candles is None or len(candles) < max(int(slow)+20, 40):
+        raise ValueError("At least 40 daily OHLC candles are required for EMA/RSI/ADX warm-up")
+    if min(int(fast), int(slow)) <= 0 or int(fast) >= int(slow):
+        raise ValueError("EMA fast period must be positive and smaller than slow period")
+    if min(float(stop_pct), float(target_pct), float(trailing_pct)) <= 0:
+        raise ValueError("Stop, target and trailing percentages must be positive")
+    frame = candles.copy()
+    frame.columns = [str(x).lower() for x in frame.columns]
     if "date" in frame.columns:
-        frame["date"]=pd.to_datetime(frame["date"],errors="coerce")
-        frame=frame.dropna(subset=["date"]).sort_values("date").set_index("date")
-    required={"open","high","low","close"}
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
+    required = {"open", "high", "low", "close"}
     if not required.issubset(frame.columns):
         raise ValueError("Underlying candles must include open/high/low/close")
-    frame=frame.sort_index()
     for col in required:
-        frame[col]=pd.to_numeric(frame[col],errors="coerce")
-    frame=frame.dropna(subset=list(required))
-    frame["ema_fast"]=frame["close"].ewm(span=int(fast),adjust=False).mean()
-    frame["ema_slow"]=frame["close"].ewm(span=int(slow),adjust=False).mean()
-    frame["bull_cross"]=(frame["ema_fast"]>frame["ema_slow"]) & (frame["ema_fast"].shift(1)<=frame["ema_slow"].shift(1))
-    frame["bear_cross"]=(frame["ema_fast"]<frame["ema_slow"]) & (frame["ema_fast"].shift(1)>=frame["ema_slow"].shift(1))
-    trades=[]; position=None
-    for i in range(1,len(frame)-1):
-        row=frame.iloc[i]; nxt=frame.iloc[i+1]
-        signal="BUY" if bool(row["bull_cross"]) else "SELL" if bool(row["bear_cross"]) else None
-        if position is None and signal:
-            entry=float(nxt["open"])
-            if entry>0:
-                direction=1 if signal=="BUY" else -1
-                position={"direction":direction,"signal":signal,"entry":entry,
-                          "entry_index":i+1,"stop":entry*(1-stop_pct/100) if direction==1 else entry*(1+stop_pct/100),
-                          "target":entry*(1+target_pct/100) if direction==1 else entry*(1-target_pct/100),
-                          "peak":entry,"trough":entry}
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame.dropna(subset=list(required)).sort_index()
+    frame = frame[(frame["open"] > 0) & (frame["high"] > 0) & (frame["low"] > 0) & (frame["close"] > 0)]
+    if len(frame) < max(int(slow)+20, 40):
+        raise ValueError("Not enough valid daily OHLC candles after cleaning")
+    close, high, low = frame["close"], frame["high"], frame["low"]
+    frame["ema_fast"] = close.ewm(span=int(fast), adjust=False).mean()
+    frame["ema_slow"] = close.ewm(span=int(slow), adjust=False).mean()
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    frame["rsi"] = 100 - (100 / (1 + rs))
+    frame.loc[(loss == 0) & (gain > 0), "rsi"] = 100.0
+    frame.loc[(gain == 0) & (loss > 0), "rsi"] = 0.0
+    prev_close = close.shift(1)
+    tr = pd.concat([(high-low), (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    up, down = high.diff(), -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    plus_di = 100 * plus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr.replace(0, float("nan"))
+    minus_di = 100 * minus_dm.ewm(alpha=1/14, adjust=False, min_periods=14).mean() / atr.replace(0, float("nan"))
+    dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, float("nan"))
+    frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    frame["bull_cross"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
+    frame["bear_cross"] = (frame["ema_fast"] < frame["ema_slow"]) & (frame["ema_fast"].shift(1) >= frame["ema_slow"].shift(1))
+    frame["buy_signal"] = frame["bull_cross"] & (frame["rsi"] >= float(rsi_buy_min)) & (frame["adx"] >= float(min_adx)) & (plus_di > minus_di)
+    frame["sell_signal"] = frame["bear_cross"] & (frame["rsi"] <= float(rsi_sell_max)) & (frame["adx"] >= float(min_adx)) & (minus_di > plus_di)
+    trades = []
+    position = None
+    for i in range(1, len(frame)-1):
+        row, nxt = frame.iloc[i], frame.iloc[i+1]
+        if position is None:
+            signal = "BUY" if bool(row["buy_signal"]) else "SELL" if bool(row["sell_signal"]) else None
+            if signal:
+                entry = float(nxt["open"])
+                if entry > 0:
+                    direction = 1 if signal == "BUY" else -1
+                    position = {"direction": direction, "signal": signal, "entry": entry,
+                                "entry_index": i+1,
+                                "stop": entry*(1-float(stop_pct)/100) if direction == 1 else entry*(1+float(stop_pct)/100),
+                                "target": entry*(1+float(target_pct)/100) if direction == 1 else entry*(1-float(target_pct)/100),
+                                "peak": entry, "trough": entry}
             continue
-        if position is None: continue
-        high=float(row["high"]); low=float(row["low"]); direction=position["direction"]
-        position["peak"]=max(position["peak"],high)
-        position["trough"]=min(position["trough"],low)
-        if direction==1:
-            position["stop"]=max(position["stop"],position["peak"]*(1-trailing_pct/100))
-            stop_hit=low<=position["stop"]; target_hit=high>=position["target"]
-            reverse=bool(row["bear_cross"])
+        o, h, l = float(row["open"]), float(row["high"]), float(row["low"])
+        direction = position["direction"]
+        old_stop = float(position["stop"])
+        target = float(position["target"])
+        exit_price = None
+        reason = None
+        if direction == 1:
+            if o <= old_stop: exit_price, reason = o, "GAP_STOP"
+            elif o >= target: exit_price, reason = target, "TARGET"
+            elif l <= old_stop: exit_price, reason = old_stop, "STOP_OR_TRAIL"
+            elif h >= target: exit_price, reason = target, "TARGET"
+            elif bool(row["sell_signal"]): exit_price, reason = float(nxt["open"]), "REVERSE_SIGNAL"
+            else:
+                position["peak"] = max(float(position["peak"]), h)
+                position["stop"] = max(old_stop, position["peak"]*(1-float(trailing_pct)/100))
         else:
-            position["stop"]=min(position["stop"],position["trough"]*(1+trailing_pct/100))
-            stop_hit=high>=position["stop"]; target_hit=low<=position["target"]
-            reverse=bool(row["bull_cross"])
-        exit_price=None; reason=None
-        if stop_hit: exit_price=position["stop"]; reason="STOP_OR_TRAIL"
-        elif target_hit: exit_price=position["target"]; reason="TARGET"
-        elif reverse: exit_price=float(nxt["open"]); reason="REVERSE_CROSS"
-        if exit_price is not None and exit_price>0:
-            pnl=(exit_price-position["entry"])*direction
-            trades.append({"direction":position["signal"],"entry_time":str(frame.index[position["entry_index"]]),
-                           "exit_time":str(frame.index[i]),"entry":position["entry"],"exit":exit_price,
-                           "return_pct":pnl/position["entry"]*100,"pnl_per_unit":pnl,"reason":reason})
-            position=None
+            if o >= old_stop: exit_price, reason = o, "GAP_STOP"
+            elif o <= target: exit_price, reason = target, "TARGET"
+            elif h >= old_stop: exit_price, reason = old_stop, "STOP_OR_TRAIL"
+            elif l <= target: exit_price, reason = target, "TARGET"
+            elif bool(row["buy_signal"]): exit_price, reason = float(nxt["open"]), "REVERSE_SIGNAL"
+            else:
+                position["trough"] = min(float(position["trough"]), l)
+                position["stop"] = min(old_stop, position["trough"]*(1+float(trailing_pct)/100))
+        if exit_price is not None and exit_price > 0:
+            pnl = (exit_price-position["entry"])*direction
+            trades.append({"direction": position["signal"],
+                           "entry_time": str(frame.index[position["entry_index"]]),
+                           "exit_time": str(frame.index[i]), "entry": position["entry"],
+                           "exit": exit_price, "return_pct": pnl/position["entry"]*100,
+                           "pnl_per_unit": pnl, "reason": reason})
+            position = None
     if position is not None:
-        last=float(frame.iloc[-1]["close"]); direction=position["direction"]
-        pnl=(last-position["entry"])*direction
-        trades.append({"direction":position["signal"],"entry_time":str(frame.index[position["entry_index"]]),
-                       "exit_time":str(frame.index[-1]),"entry":position["entry"],"exit":last,
-                       "return_pct":pnl/position["entry"]*100,"pnl_per_unit":pnl,"reason":"END_OF_DATA"})
-    wins=sum(t["pnl_per_unit"]>0 for t in trades)
-    return {"trades":trades,"trade_count":len(trades),"wins":wins,"losses":len(trades)-wins,
-            "win_rate_pct":round(wins/len(trades)*100,2) if trades else 0.0,
-            "gross_points_per_share":round(sum(t["pnl_per_unit"] for t in trades),4),
-            "note":"Underlying directional simulation; BUY is long and SELL is short. No option premium is inferred."}
+        last = float(frame.iloc[-1]["close"])
+        direction = position["direction"]
+        pnl = (last-position["entry"])*direction
+        trades.append({"direction": position["signal"],
+                       "entry_time": str(frame.index[position["entry_index"]]),
+                       "exit_time": str(frame.index[-1]), "entry": position["entry"],
+                       "exit": last, "return_pct": pnl/position["entry"]*100,
+                       "pnl_per_unit": pnl, "reason": "END_OF_DATA"})
+    wins = sum(t["pnl_per_unit"] > 0 for t in trades)
+    return {"trades": trades, "trade_count": len(trades), "wins": wins,
+            "losses": len(trades)-wins,
+            "win_rate_pct": round(wins/len(trades)*100, 2) if trades else 0.0,
+            "gross_points_per_share": round(sum(t["pnl_per_unit"] for t in trades), 4),
+            "indicator_rule": f"EMA {fast}/{slow} cross + RSI(14) confirmation + ADX(14) >= {min_adx} + directional DI",
+            "note": "Underlying directional simulation; BUY is long and SELL is short. No option premium is inferred."}
 
 
 def calculate_equity_backtest_metrics(result, brokerage_per_order=20.0,

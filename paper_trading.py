@@ -153,8 +153,8 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
     dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, float("nan"))
     frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     frame["cross_up"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
-    frame["cross_up_recent"] = frame["cross_up"].rolling(5, min_periods=1).max().astype(bool)
-    frame["entry_ok"] = frame["cross_up_recent"] & (frame["rsi"] >= float(min_rsi)) & (frame["adx"] >= float(min_adx))
+    bull_regime = (frame["ema_fast"] > frame["ema_slow"]) & (frame["rsi"] >= float(min_rsi)) & (frame["adx"] >= float(min_adx))
+    frame["entry_ok"] = bull_regime & ~bull_regime.shift(1).fillna(False)
     trades = []
     position = None
     for i in range(1, len(frame)-1):
@@ -209,7 +209,7 @@ def backtest_ema_strategy(candles, fast=9, slow=21, stop_pct=2.0, target_pct=4.0
             "losses": len(trades)-wins,
             "win_rate_pct": round(wins/len(trades)*100, 2) if trades else 0.0,
             "net_points_per_unit": round(net, 4),
-            "indicator_rule": f"EMA {fast}/{slow} bullish crossover + RSI(14) >= {min_rsi} + ADX(14) >= {min_adx}",
+            "indicator_rule": f"EMA {fast}/{slow} bullish regime + RSI(14) >= {min_rsi} + ADX(14) >= {min_adx}; one entry per confirmed regime",
             "note": "Historical option-premium simulation only; excludes brokerage, taxes, slippage, bid-ask spread and execution delay."}
 
 
@@ -364,10 +364,10 @@ def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
     frame["adx"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     frame["bull_cross"] = (frame["ema_fast"] > frame["ema_slow"]) & (frame["ema_fast"].shift(1) <= frame["ema_slow"].shift(1))
     frame["bear_cross"] = (frame["ema_fast"] < frame["ema_slow"]) & (frame["ema_fast"].shift(1) >= frame["ema_slow"].shift(1))
-    frame["bull_cross_recent"] = frame["bull_cross"].rolling(5, min_periods=1).max().astype(bool)
-    frame["bear_cross_recent"] = frame["bear_cross"].rolling(5, min_periods=1).max().astype(bool)
-    frame["buy_signal"] = frame["bull_cross_recent"] & (frame["rsi"] >= float(rsi_buy_min)) & (frame["adx"] >= float(min_adx)) & (plus_di > minus_di)
-    frame["sell_signal"] = frame["bear_cross_recent"] & (frame["rsi"] <= float(rsi_sell_max)) & (frame["adx"] >= float(min_adx)) & (minus_di > plus_di)
+    buy_regime = (frame["ema_fast"] > frame["ema_slow"]) & (frame["rsi"] >= float(rsi_buy_min)) & (frame["adx"] >= float(min_adx)) & (plus_di > minus_di)
+    sell_regime = (frame["ema_fast"] < frame["ema_slow"]) & (frame["rsi"] <= float(rsi_sell_max)) & (frame["adx"] >= float(min_adx)) & (minus_di > plus_di)
+    frame["buy_signal"] = buy_regime & ~buy_regime.shift(1).fillna(False)
+    frame["sell_signal"] = sell_regime & ~sell_regime.shift(1).fillna(False)
     trades = []
     position = None
     for i in range(1, len(frame)-1):
@@ -430,7 +430,7 @@ def backtest_directional_underlying(candles, fast=9, slow=21, stop_pct=2.0,
             "losses": len(trades)-wins,
             "win_rate_pct": round(wins/len(trades)*100, 2) if trades else 0.0,
             "gross_points_per_share": round(sum(t["pnl_per_unit"] for t in trades), 4),
-            "indicator_rule": f"EMA {fast}/{slow} cross + RSI(14) confirmation + ADX(14) >= {min_adx} + directional DI",
+            "indicator_rule": f"EMA {fast}/{slow} trend regime + RSI(14) direction filter + ADX(14) >= {min_adx} + directional DI; one entry per regime",
             "note": "Underlying directional simulation; BUY is long and SELL is short. No option premium is inferred."}
 
 

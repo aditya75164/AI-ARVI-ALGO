@@ -4,10 +4,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from engine import add_dtc_style_indicators, build_signal
-from stock_selector import scan_stock_universe
+from stock_selector import scan_stock_universe, fetch_fno_underlying_backtest_data
 from option_enrichment import enrich_fno_option_premiums
 from bot_ledger import init_db, sync_broker_history, dashboard_data
-from paper_trading import quantity_for_risk, open_paper_trade, mark_paper_trade, close_paper_trade, can_open_trade, backtest_ema_strategy, compare_backtest_horizons, calculate_backtest_metrics
+from paper_trading import quantity_for_risk, open_paper_trade, mark_paper_trade, close_paper_trade, can_open_trade, backtest_ema_strategy, compare_backtest_horizons, calculate_backtest_metrics, backtest_directional_underlying, calculate_equity_backtest_metrics, compare_underlying_horizons
 from paper_ledger import init_paper_db, load_paper_trades, save_paper_trade, paper_summary
 from market_briefing import fetch_index_daily_candles, build_index_scenarios, fetch_market_news
 from kite_adapter import (
@@ -584,106 +584,145 @@ with tabs[8]:
         **Important:** signals are research filters, not guaranteed recommendations. Verify liquidity, spread, underlying trend and risk before any paper trade.
         """)
     st.markdown("#### Automatic multi-stock NSE F&O backtest")
-    st.caption("Compares 30, 60 and 90 available trading sessions for one automatically selected CE/PE contract per unique NSE F&O stock/index.")
-    st.info("Includes estimated Zerodha NSE option charges, net P&L, maximum drawdown, profit factor, CE vs PE, NIFTY vs BANKNIFTY and directional strategy accuracy. Option contracts expire, so longer horizons are shown only when that exact contract has enough history; no missing data is fabricated.")
+    st.caption("Both mode: underlying stock/index backtests across the full active NSE F&O universe, plus CE/PE premium backtests only where genuine active-contract candles are available.")
+    st.info("Underlying 30/60/90-session results use NSE cash/index daily candles and EMA 9/21 long-short signals. Option results use the selected live CE/PE contract's actual 5-minute premium candles. Kite does not provide expired-option history, so option history is never fabricated or relabelled as 30/60/90 days.")
     if st.button("RUN FULL NSE MULTI-STOCK BACKTEST",type="primary",key="paper_backtest_all_stocks"):
         if kite is None:
-            st.error("Kite login is required to scan NSE F&O instruments and download historical candles.")
+            st.error("Kite login is required. Verify the local Kite connection first.")
         else:
             try:
-                with st.spinner("1/4 · Scanning all active NSE F&O underlyings and calculating stock indicators..."):
-                    auto_stocks,auto_stats=scan_stock_universe(kite,"FNO",None)
-                st.session_state.paper_multi_scan_stats=auto_stats
-                auto_directional=auto_stocks[auto_stocks["Signal"].isin(["BUY","SELL"])].copy() if not auto_stocks.empty else pd.DataFrame()
-                if not auto_directional.empty:
-                    auto_directional=auto_directional.sort_values(["Score","Relative Volume","Turnover ₹"],ascending=[False,False,False]).drop_duplicates("Stock").reset_index(drop=True)
-                auto_shortlist=auto_directional.head(30).copy()
-                with st.spinner(f"2/4 · Finding one best liquid CE/PE option for {len(auto_shortlist)} unique stocks..."):
-                    auto_options=enrich_fno_option_premiums(kite,auto_shortlist,max_stocks=30) if not auto_shortlist.empty else pd.DataFrame()
-                horizon_rows=[]
-                availability_rows=[]
-                if not auto_options.empty:
-                    with st.spinner("3/4 · Downloading daily option candles and testing 30/60/90 trading-session horizons..."):
-                        auto_master=pd.DataFrame(kite.instruments("NFO"))
-                        auto_tokens=dict(zip(auto_master["tradingsymbol"].astype(str),auto_master["instrument_token"].astype(int))) if not auto_master.empty else {}
-                        auto_end=datetime.now(IST); auto_start=auto_end-timedelta(days=180)
-                        for _,auto_option in auto_options.iterrows():
-                            auto_symbol=str(auto_option["Option Symbol"])
-                            auto_token=auto_tokens.get(auto_symbol)
-                            if not auto_token: continue
+                with st.spinner("1/4 · Fetching daily underlying candles for the complete active NSE F&O universe..."):
+                    underlying_data,underlying_signals,underlying_stats,underlying_diagnostics=fetch_fno_underlying_backtest_data(kite,lookback_days=240)
+                st.session_state.paper_multi_scan_stats=underlying_stats
+                st.session_state.paper_multi_underlying_diagnostics=underlying_diagnostics
+                signal_map={}
+                if not underlying_signals.empty:
+                    signal_map={str(row["Stock"]):row for row in underlying_signals.to_dict("records")}
+                underlying_rows=[]
+                for symbol,candles in underlying_data.items():
+                    comparisons=compare_underlying_horizons(candles,horizons=(30,60,90),fast=9,slow=21,
+                        stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                    signal=signal_map.get(str(symbol),{})
+                    for horizon,raw in comparisons.items():
+                        if not raw.get("available"):
+                            underlying_rows.append({"Horizon (sessions)":horizon,"Stock":symbol,
+                                "Signal":signal.get("Signal","UNRANKED"),"Trades":0,"Accuracy (%)":0.0,
+                                "Gross P&L / share (₹)":0.0,"Estimated charges (₹)":0.0,"Net P&L / share (₹)":0.0,
+                                "Max Drawdown / share (₹)":0.0,"Profit Factor":0.0,"Status":"INSUFFICIENT_HISTORY",
+                                "Data detail":raw.get("reason","Insufficient daily candles")})
+                            continue
+                        metrics=calculate_equity_backtest_metrics(raw,quantity=1)
+                        underlying_rows.append({"Horizon (sessions)":horizon,"Stock":symbol,
+                            "Signal":signal.get("Signal","UNRANKED"),"Score":signal.get("Score",None),
+                            "RSI":signal.get("RSI",None),"Relative Volume":signal.get("Relative Volume",None),
+                            "Trades":metrics["trade_count"],"Wins":metrics["wins"],"Losses":metrics["losses"],
+                            "Accuracy (%)":metrics["win_rate_pct"],"Gross P&L / share (₹)":metrics["gross_pnl"],
+                            "Estimated charges (₹)":metrics["total_charges"],"Net P&L / share (₹)":metrics["net_pnl"],
+                            "Max Drawdown / share (₹)":metrics["max_drawdown"],"Profit Factor":metrics["profit_factor"],
+                            "Status":"TESTED" if metrics["trade_count"] else "NO_VALID_CROSSOVER",
+                            "Data detail":f"{raw.get('sessions_available',0)} daily candles; EMA 9/21"})
+                underlying_frame=pd.DataFrame(underlying_rows)
+                if not underlying_frame.empty:
+                    underlying_frame=underlying_frame.sort_values(["Horizon (sessions)","Net P&L / share (₹)","Profit Factor"],ascending=[True,False,False]).reset_index(drop=True)
+                    underlying_frame.insert(0,"Rank",underlying_frame.groupby("Horizon (sessions)")["Net P&L / share (₹)"].rank(method="first",ascending=False).astype(int))
+                st.session_state.paper_multi_underlying=underlying_frame
+                option_rows=[]; option_diagnostics=[]
+                directional=underlying_signals[underlying_signals["Signal"].isin(["BUY","SELL"])].copy() if not underlying_signals.empty else pd.DataFrame()
+                if not directional.empty:
+                    directional=directional.sort_values(["Score","Relative Volume","Turnover ₹"],ascending=[False,False,False] if "Turnover ₹" in directional.columns else [False,False]).drop_duplicates("Stock").head(30)
+                with st.spinner(f"2/4 · Selecting trend-aligned CE/PE contracts for {len(directional)} ranked underlyings..."):
+                    try:
+                        selected_options=enrich_fno_option_premiums(kite,directional,max_stocks=30) if not directional.empty else pd.DataFrame()
+                    except Exception as option_select_error:
+                        selected_options=pd.DataFrame()
+                        option_diagnostics.append({"Stock":"UNIVERSE","Contract":"","Candles":0,"Status":"OPTION_SELECTION_ERROR","Reason":str(option_select_error)[:220]})
+                if selected_options.empty and not directional.empty:
+                    option_diagnostics.append({"Stock":"UNIVERSE","Contract":"","Candles":0,"Status":"NO_LIVE_OPTION_QUOTES","Reason":"No eligible current CE/PE contract passed quote, OI, volume and premium filters. Underlying backtest results remain valid."})
+                if not selected_options.empty:
+                    with st.spinner("3/4 · Testing genuine available 5-minute option premium candles..."):
+                        nfo_master=pd.DataFrame(kite.instruments("NFO"))
+                        token_map=dict(zip(nfo_master["tradingsymbol"].astype(str),nfo_master["instrument_token"].astype(int))) if not nfo_master.empty else {}
+                        now=datetime.now(IST); option_start=now-timedelta(days=30)
+                        for _,opt in selected_options.iterrows():
+                            stock=str(opt["Stock"]); symbol=str(opt["Option Symbol"]); token=token_map.get(symbol)
+                            if not token:
+                                option_diagnostics.append({"Stock":stock,"Contract":symbol,"Candles":0,"Status":"TOKEN_NOT_IN_CURRENT_MASTER","Reason":"Contract is not in the current active NFO instrument master; Kite historical lookup skipped."})
+                                continue
                             try:
-                                auto_candles=pd.DataFrame(kite.historical_data(auto_token,auto_start,auto_end,"day"))
-                                if auto_candles.empty or "date" not in auto_candles.columns:
-                                    availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Status":"No daily option history"})
+                                rows=kite.historical_data(token,option_start,now,"5minute")
+                                option_candles=pd.DataFrame(rows or [])
+                                count=len(option_candles)
+                                if count<30:
+                                    option_diagnostics.append({"Stock":stock,"Contract":symbol,"Candles":count,"Status":"INSUFFICIENT_OPTION_CANDLES","Reason":f"Kite returned {count} actual 5-minute candles; at least 30 required for EMA 9/21."})
                                     continue
-                                auto_candles["date"]=pd.to_datetime(auto_candles["date"],errors="coerce",utc=True).dt.tz_convert("Asia/Kolkata")
-                                comparisons=compare_backtest_horizons(auto_candles,horizons=(30,60,90),fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
-                                lot=int(auto_option.get("Option Lot Size") or 1)
-                                auto_row=auto_directional.loc[auto_directional["Stock"].eq(auto_option["Stock"])]
-                                if auto_row.empty: continue
-                                sig=auto_row.iloc[0]
-                                for horizon,raw in comparisons.items():
-                                    if not raw.get("available"):
-                                        availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Horizon (sessions)":horizon,"Sessions available":raw.get("sessions_available",0),"Status":raw.get("reason","Insufficient history")})
-                                        continue
-                                    metrics=calculate_backtest_metrics(raw,lot_size=lot)
-                                    horizon_rows.append({
-                                        "Horizon (sessions)":horizon,"Stock":str(auto_option["Stock"]),
-                                        "Index / Stock Type":"Index" if str(auto_option["Stock"]) in ("NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY","NIFTYNXT50") else "F&O Stock",
-                                        "Option Side":str(auto_option["Option Side"]),"Contract":auto_symbol,"Lot Size":lot,
-                                        "Underlying Signal":str(sig["Signal"]),"Strategy":"EMA 9/21 · daily option candles",
-                                        "Trades":metrics["trade_count"],"Wins":metrics["wins"],"Losses":metrics["losses"],
-                                        "Accuracy (%)":metrics["win_rate_pct"],"Gross P&L (₹)":metrics["gross_pnl"],
-                                        "Charges & Taxes (₹)":metrics["total_charges"],"Net P&L (₹)":metrics["net_pnl"],
-                                        "Max Drawdown (₹)":metrics["max_drawdown"],"Profit Factor":metrics["profit_factor"],
-                                        "Net Return (%)":round(sum(t["net_return_pct"] for t in metrics["trades"]),2),
-                                        "Sessions Tested":raw.get("sessions_available",0)
-                                    })
-                            except Exception as option_exc:
-                                availability_rows.append({"Stock":str(auto_option["Stock"]),"Contract":auto_symbol,"Status":str(option_exc)[:160]})
-                auto_result_frame=pd.DataFrame(horizon_rows)
-                if not auto_result_frame.empty:
-                    auto_result_frame=auto_result_frame.sort_values(["Horizon (sessions)","Net P&L (₹)","Profit Factor","Accuracy (%)"],ascending=[True,False,False,False]).reset_index(drop=True)
-                    auto_result_frame.insert(0,"Rank",auto_result_frame.groupby("Horizon (sessions)")["Net P&L (₹)"].rank(method="first",ascending=False).astype(int))
-                st.session_state.paper_multi_backtest=auto_result_frame
-                st.session_state.paper_multi_availability=pd.DataFrame(availability_rows)
+                                raw=backtest_ema_strategy(option_candles,fast=9,slow=21,stop_pct=paper_stop,target_pct=paper_target,trailing_pct=paper_trail_pct)
+                                lot=int(opt.get("Option Lot Size") or 1)
+                                metrics=calculate_backtest_metrics(raw,lot_size=lot)
+                                option_rows.append({"Stock":stock,"Option Side":str(opt["Option Side"]),"Contract":symbol,
+                                    "Expiry":str(opt.get("Option Expiry","")),"Strike":opt.get("Option Strike"),
+                                    "Current Premium (₹)":opt.get("Option Premium"),"Lot Size":lot,
+                                    "Actual 5m Candles":count,"Trades":metrics["trade_count"],"Wins":metrics["wins"],
+                                    "Losses":metrics["losses"],"Win Rate (%)":metrics["win_rate_pct"],
+                                    "Gross P&L / lot (₹)":metrics["gross_pnl"],"Estimated Charges (₹)":metrics["total_charges"],
+                                    "Net P&L / lot (₹)":metrics["net_pnl"],"Max Drawdown (₹)":metrics["max_drawdown"],
+                                    "Profit Factor":metrics["profit_factor"],"Status":"TESTED" if metrics["trade_count"] else "NO_EMA_CROSSOVER",
+                                    "Data Source":"Kite active option 5-minute candles"})
+                                if not metrics["trade_count"]:
+                                    option_diagnostics.append({"Stock":stock,"Contract":symbol,"Candles":count,"Status":"NO_EMA_CROSSOVER","Reason":"Candles were available but EMA 9/21 generated no completed trade."})
+                            except Exception as option_error:
+                                option_diagnostics.append({"Stock":stock,"Contract":symbol,"Candles":0,"Status":"OPTION_HISTORY_ERROR","Reason":str(option_error)[:220]})
+                option_frame=pd.DataFrame(option_rows)
+                if not option_frame.empty:
+                    option_frame=option_frame.sort_values(["Net P&L / lot (₹)","Win Rate (%)"],ascending=False).reset_index(drop=True)
+                    option_frame.insert(0,"Rank",range(1,len(option_frame)+1))
+                st.session_state.paper_multi_options=option_frame
+                st.session_state.paper_multi_option_diagnostics=pd.DataFrame(option_diagnostics)
                 st.session_state.paper_multi_scan_time=datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
             except Exception as exc:
-                st.error(f"Automatic multi-stock backtest failed: {exc}")
-    auto_saved=st.session_state.get("paper_multi_backtest")
+                st.error(f"Automatic NSE F&O backtest failed: {exc}")
     auto_stats_saved=st.session_state.get("paper_multi_scan_stats")
     if auto_stats_saved:
-        st.caption(f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · Active F&O universe: {auto_stats_saved.get('universe',0)} · Histories checked: {auto_stats_saved.get('history_checked',0)} · Scored stocks: {auto_stats_saved.get('selected',0)} · BUY/SELL: {auto_stats_saved.get('directional',0)} · WAIT: {auto_stats_saved.get('wait',0)} · Detailed contracts: up to 30")
-    if auto_saved is not None:
-        if not auto_saved.empty:
-            st.success(f"{auto_saved['Stock'].nunique()} unique stocks/indexes produced at least one valid horizon result. Each row is one underlying and one horizon.")
-            for horizon in (30,60,90):
-                part=auto_saved[auto_saved["Horizon (sessions)"].eq(horizon)]
-                st.markdown(f"##### {horizon}-trading-session results")
-                if part.empty: st.warning(f"No selected option contract had enough history for {horizon} sessions.")
-                else: st.dataframe(part,use_container_width=True,hide_index=True)
-            st.markdown("##### CE vs PE performance")
-            side_summary=auto_saved.groupby(["Horizon (sessions)","Option Side"],as_index=False).agg(
-                Stocks=("Stock","nunique"),Trades=("Trades","sum"),Wins=("Wins","sum"),
-                Gross_PnL=("Gross P&L (₹)","sum"),Charges=("Charges & Taxes (₹)","sum"),
-                Net_PnL=("Net P&L (₹)","sum"),Max_Drawdown=("Max Drawdown (₹)","max"))
-            st.dataframe(side_summary,use_container_width=True,hide_index=True)
-            st.markdown("##### NIFTY vs BANKNIFTY")
-            index_part=auto_saved[auto_saved["Stock"].isin(["NIFTY","BANKNIFTY"])]
-            if index_part.empty: st.info("NIFTY/BANKNIFTY did not produce valid selected-contract history in this scan.")
-            else: st.dataframe(index_part,use_container_width=True,hide_index=True)
-            st.markdown("##### Strategy-wise BUY / SELL accuracy")
-            strategy_summary=auto_saved.groupby(["Horizon (sessions)","Underlying Signal","Option Side","Strategy"],as_index=False).agg(
-                Stocks=("Stock","nunique"),Trades=("Trades","sum"),Wins=("Wins","sum"),Losses=("Losses","sum"),Net_PnL=("Net P&L (₹)","sum"))
-            strategy_summary["Accuracy (%)"]=(strategy_summary["Wins"]/strategy_summary["Trades"].replace(0,pd.NA)*100).round(2)
-            st.dataframe(strategy_summary,use_container_width=True,hide_index=True)
-            st.download_button("Download all horizon metrics",auto_saved.to_csv(index=False),"arvi_multi_stock_horizon_metrics.csv","text/csv")
+        st.markdown("##### Underlying universe diagnostics")
+        diag_cols=st.columns(5)
+        diag_cols[0].metric("F&O universe",auto_stats_saved.get("universe",0))
+        diag_cols[1].metric("Candles fetched",auto_stats_saved.get("fetched",0))
+        diag_cols[2].metric("30-session usable",auto_stats_saved.get("usable_30",0))
+        diag_cols[3].metric("60-session usable",auto_stats_saved.get("usable_60",0))
+        diag_cols[4].metric("90-session usable",auto_stats_saved.get("usable_90",0))
+        st.caption(f"Last scan: {st.session_state.get('paper_multi_scan_time','')} · Indicator-scored: {auto_stats_saved.get('indicator_scored',0)} · BUY/SELL: {auto_stats_saved.get('directional_signals',0)} · WAIT: {auto_stats_saved.get('wait_signals',0)} · Fetch errors: {auto_stats_saved.get('errors',0)} · Source: {auto_stats_saved.get('data_source','Kite')}")
+    underlying_saved=st.session_state.get("paper_multi_underlying")
+    if underlying_saved is not None:
+        st.markdown("##### Underlying stock/index backtest · 30 / 60 / 90 sessions")
+        if underlying_saved.empty:
+            st.warning("No underlying result rows were produced. Expand diagnostics below to see whether the instrument master or candle API failed.")
         else:
-            st.warning("No selected option contract produced enough daily candles and at least one valid EMA trade.")
-        missing=st.session_state.get("paper_multi_availability")
-        if missing is not None and not missing.empty:
-            with st.expander("Contracts / horizons with insufficient history"):
-                st.dataframe(missing,use_container_width=True,hide_index=True)
-    else:
-        st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST. ARVI scans the NSE F&O universe and compares available 30/60/90-session results.")
+            for horizon in (30,60,90):
+                st.markdown(f"###### {horizon}-session ranking")
+                subset=underlying_saved[underlying_saved["Horizon (sessions)"].eq(horizon)]
+                if subset.empty: st.info("No records for this horizon.")
+                else: st.dataframe(subset,use_container_width=True,hide_index=True)
+            st.download_button("Download underlying backtest CSV",underlying_saved.to_csv(index=False),"arvi_underlying_30_60_90_backtest.csv","text/csv")
+    option_saved=st.session_state.get("paper_multi_options")
+    if option_saved is not None:
+        st.markdown("##### CE / PE premium backtest · genuine available option candles")
+        if option_saved.empty:
+            st.warning("No valid active option premium backtest was produced. This does not erase the underlying stock results.")
+        else:
+            st.dataframe(option_saved,use_container_width=True,hide_index=True)
+            st.markdown("###### CE vs PE performance")
+            st.dataframe(option_saved.groupby("Option Side",as_index=False).agg(
+                Contracts=("Contract","count"),Trades=("Trades","sum"),Wins=("Wins","sum"),
+                Gross_PnL=("Gross P&L / lot (₹)","sum"),Charges=("Estimated Charges (₹)","sum"),
+                Net_PnL=("Net P&L / lot (₹)","sum")),use_container_width=True,hide_index=True)
+            st.download_button("Download option backtest CSV",option_saved.to_csv(index=False),"arvi_option_premium_backtest.csv","text/csv")
+    option_diag=st.session_state.get("paper_multi_option_diagnostics")
+    if option_diag is not None and not option_diag.empty:
+        with st.expander("Option data availability diagnostics"):
+            st.dataframe(option_diag,use_container_width=True,hide_index=True)
+    underlying_diag=st.session_state.get("paper_multi_underlying_diagnostics")
+    if underlying_diag is not None and not underlying_diag.empty:
+        with st.expander("Underlying data availability diagnostics"):
+            st.dataframe(underlying_diag,use_container_width=True,hide_index=True)
+    if auto_stats_saved is None:
+        st.info("Click RUN FULL NSE MULTI-STOCK BACKTEST to scan all active NSE F&O stocks and indexes. Underlying results do not depend on expired option history.")
     st.caption("Paper positions are marked when live prices are refreshed. Stop/target are simulated checks, not exchange orders or guaranteed fills.")

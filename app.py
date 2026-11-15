@@ -579,13 +579,13 @@ with tabs[8]:
 
         **F&O Stock Selection watchlist:** scans near-ATM CE/PE contracts for F&O stocks. It uses premium percentage change versus the previous close: BUY at +0.5% or more, SELL at -0.5% or less, otherwise WAIT. It selects the nearest expiry and ranks the selected contracts by open interest (OI) and traded volume. This is a simple momentum/reference filter, not EMA/RSI/ADX confirmation.
 
-        **Historical Paper Backtest:** uses EMA 9 / EMA 21 bullish crossover with RSI(14) >= 52 and ADX(14) >= 18 confirmation on the selected option's 5-minute premium candles. Entry is simulated at the next candle open. Stop/target checks use the previously active stop; trailing stops update only after a candle survives. Same-candle stop/target ambiguity is resolved conservatively in favour of the stop.
+        **Historical Paper Backtest:** uses EMA 9 / EMA 21 bullish trend regime with RSI(14) >= 52 and ADX(14) >= 18 confirmation on the selected option's 5-minute premium candles. Entry is simulated at the next candle open. Stop/target checks use the previously active stop; trailing stops update only after a candle survives. Same-candle stop/target ambiguity is resolved conservatively in favour of the stop.
         
         **Important:** signals are research filters, not guaranteed recommendations. Verify liquidity, spread, underlying trend and risk before any paper trade.
         """)
     st.markdown("#### Automatic multi-stock NSE F&O backtest")
     st.caption("Both mode: underlying stock/index backtests across the full active NSE F&O universe, plus CE/PE premium backtests only where genuine active-contract candles are available.")
-    st.info("Underlying 30/60/90-session results use NSE cash/index daily candles with EMA 9/21 crossover + RSI(14) + ADX(14) + directional DI confirmation. Option results use genuine active CE/PE 5-minute premium candles with EMA/RSI/ADX confirmation. Stops are simulated without using a candle high to tighten the stop against that same candle low. Kite does not provide expired-option history, so option history is never fabricated or relabelled as 30/60/90 days.")
+    st.info("Underlying 30/60/90-session results use NSE cash/index daily candles with EMA 9/21 trend regime + RSI(14) + ADX(14) + directional DI confirmation. Option results use genuine active CE/PE 5-minute premium candles with EMA/RSI/ADX confirmation. Stops are simulated without using a candle high to tighten the stop against that same candle low. Kite does not provide expired-option history, so option history is never fabricated or relabelled as 30/60/90 days.")
     if st.button("RUN FULL NSE MULTI-STOCK BACKTEST",type="primary",key="paper_backtest_all_stocks"):
         if kite is None:
             st.error("Kite login is required. Verify the local Kite connection first.")
